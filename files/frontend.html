@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>TM1 AI Analyst</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700&family=IBM+Plex+Sans:wght@300;400;500&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #070d1a;
+    --surface:   #0f1829;
+    --card:      #152038;
+    --border:    #1e3050;
+    --border-hi: #2a4a7a;
+    --accent:    #22d3ee;
+    --accent2:   #7c3aed;
+    --success:   #10b981;
+    --warn:      #f59e0b;
+    --err:       #ef4444;
+    --text:      #e2eaf4;
+    --muted:     #5a7090;
+    --dim:       #8ba0bb;
+    --mono:      'IBM Plex Mono', monospace;
+    --sans:      'IBM Plex Sans', sans-serif;
+    --display:   'Syne', sans-serif;
+  }
+
+  html, body {
+    min-height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.6;
+  }
+
+  /* Grid noise texture */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(var(--border) 1px, transparent 1px),
+      linear-gradient(90deg, var(--border) 1px, transparent 1px);
+    background-size: 40px 40px;
+    opacity: 0.15;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* ── Header ── */
+  header {
+    position: relative;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 18px 32px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(7,13,26,0.9);
+    backdrop-filter: blur(12px);
+  }
+
+  .logo {
+    width: 36px; height: 36px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--display);
+    font-weight: 700; font-size: 16px;
+    color: #fff;
+    flex-shrink: 0;
+  }
+
+  .header-title {
+    font-family: var(--display);
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--text);
+  }
+
+  .header-sub {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 1px;
+  }
+
+  .status-dot {
+    margin-left: auto;
+    display: flex; align-items: center; gap: 7px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--success);
+    box-shadow: 0 0 6px var(--success);
+    animation: pulse-dot 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.4; }
+  }
+
+  /* ── Main ── */
+  main {
+    position: relative;
+    z-index: 1;
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 48px 24px 80px;
+  }
+
+  /* ── Hero ── */
+  .hero {
+    text-align: center;
+    margin-bottom: 40px;
+  }
+
+  .hero h1 {
+    font-family: var(--display);
+    font-size: clamp(26px, 4vw, 38px);
+    font-weight: 700;
+    line-height: 1.2;
+    background: linear-gradient(135deg, var(--text) 40%, var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 10px;
+  }
+
+  .hero p {
+    color: var(--dim);
+    font-size: 15px;
+    font-weight: 300;
+  }
+
+  /* ── Question card ── */
+  .q-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 24px;
+    margin-bottom: 32px;
+    transition: border-color 0.2s;
+  }
+
+  .q-card:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent), 0 4px 32px rgba(34,211,238,0.08);
+  }
+
+  .q-label {
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 10px;
+  }
+
+  textarea {
+    width: 100%;
+    min-height: 80px;
+    background: transparent;
+    border: none;
+    outline: none;
+    resize: none;
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    caret-color: var(--accent);
+  }
+
+  textarea::placeholder { color: var(--muted); }
+
+  .q-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .hint-pills {
+    display: flex; gap: 8px; flex-wrap: wrap;
+  }
+
+  .pill {
+    font-size: 11px;
+    color: var(--muted);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 100px;
+    padding: 4px 10px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .pill:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+
+  button.submit {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--accent);
+    color: #000;
+    font-family: var(--sans);
+    font-size: 14px;
+    font-weight: 500;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 20px;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  button.submit:hover  { background: #06b6d4; transform: translateY(-1px); }
+  button.submit:active { transform: translateY(0); }
+  button.submit:disabled {
+    background: var(--border-hi);
+    color: var(--muted);
+    cursor: not-allowed;
+    transform: none;
+  }
+
+  .btn-icon { font-size: 18px; }
+  .spinner {
+    width: 16px; height: 16px;
+    border: 2px solid rgba(0,0,0,0.3);
+    border-top-color: #000;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Result cards ── */
+  .results { display: flex; flex-direction: column; gap: 16px; }
+
+  .result-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+    animation: slide-up 0.35s cubic-bezier(0.16,1,0.3,1) both;
+  }
+
+  @keyframes slide-up {
+    from { opacity: 0; transform: translateY(20px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .card-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(255,255,255,0.02);
+  }
+
+  .step-badge {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 500;
+    flex-shrink: 0;
+  }
+
+  .step-badge.cyan   { background: rgba(34,211,238,0.15); color: var(--accent); }
+  .step-badge.purple { background: rgba(124,58,237,0.15); color: #a78bfa; }
+  .step-badge.green  { background: rgba(16,185,129,0.15); color: var(--success); }
+
+  .card-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+    letter-spacing: 0.01em;
+  }
+
+  .card-body { padding: 20px; }
+
+  /* Step 1 — view selection */
+  .meta-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  .meta-item { }
+
+  .meta-label {
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+
+  .meta-value {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--accent);
+    word-break: break-all;
+  }
+
+  .reasoning-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-size: 13px;
+    color: var(--dim);
+    line-height: 1.6;
+  }
+
+  /* Step 2 — data preview */
+  .data-stat {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 14px;
+  }
+
+  .data-stat strong {
+    font-family: var(--mono);
+    font-size: 20px;
+    color: var(--success);
+    font-weight: 500;
+  }
+
+  .table-wrap {
+    overflow-x: auto;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+
+  th {
+    background: var(--surface);
+    color: var(--muted);
+    font-weight: 500;
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+
+  td {
+    padding: 7px 12px;
+    border-bottom: 1px solid rgba(30,48,80,0.6);
+    color: var(--dim);
+    white-space: nowrap;
+  }
+
+  td.num {
+    text-align: right;
+    color: var(--text);
+    font-weight: 500;
+  }
+
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(34,211,238,0.03); }
+
+  /* Step 3 — analysis */
+  .analysis-text {
+    font-size: 14px;
+    line-height: 1.8;
+    color: var(--dim);
+    white-space: pre-wrap;
+  }
+
+  /* Error */
+  .error-card {
+    background: rgba(239,68,68,0.08);
+    border: 1px solid rgba(239,68,68,0.3);
+    border-radius: 12px;
+    padding: 16px 20px;
+    color: #fca5a5;
+    font-size: 14px;
+    animation: slide-up 0.3s ease both;
+  }
+
+  /* Skeleton loader */
+  .skeleton-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 20px;
+    animation: slide-up 0.3s ease both;
+  }
+
+  .skeleton-line {
+    height: 12px;
+    background: linear-gradient(90deg, var(--surface), var(--border), var(--surface));
+    background-size: 200% 100%;
+    border-radius: 6px;
+    margin-bottom: 10px;
+    animation: shimmer 1.5s ease-in-out infinite;
+  }
+
+  .skeleton-line:last-child { margin-bottom: 0; }
+  .skeleton-line.w60 { width: 60%; }
+  .skeleton-line.w80 { width: 80%; }
+
+  @keyframes shimmer {
+    0%   { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">T<span style="color:rgba(255,255,255,0.5);font-size:11px">M1</span></div>
+  <div>
+    <div class="header-title">TM1 AI Analyst</div>
+    <div class="header-sub">Planning Analytics · Natural Language Interface</div>
+  </div>
+  <div class="status-dot">
+    <div class="dot" id="statusDot"></div>
+    <span id="statusLabel">Connected</span>
+  </div>
+</header>
+
+<main>
+  <div class="hero">
+    <h1>Ask your financial data anything</h1>
+    <p>AI reads your TM1 cube views and delivers instant analysis in plain language.</p>
+  </div>
+
+  <div class="q-card">
+    <div class="q-label">Your question</div>
+    <textarea
+      id="question"
+      placeholder="e.g. What is the total gross salary by department this month? How does headcount compare to last year?"
+      rows="3"
+    ></textarea>
+    <div class="q-footer">
+      <div class="hint-pills">
+        <span class="pill" onclick="setQ('Show me labor cost summary by department')">Labor cost summary</span>
+        <span class="pill" onclick="setQ('What is the headcount movement this quarter?')">Headcount movement</span>
+        <span class="pill" onclick="setQ('Compare gross salary vs base pay by employee')">Salary breakdown</span>
+      </div>
+      <button class="submit" id="submitBtn" onclick="runAnalysis()">
+        <span class="btn-icon" id="btnIcon">→</span>
+        <span id="btnLabel">Analyze</span>
+      </button>
+    </div>
+  </div>
+
+  <div class="results" id="results"></div>
+</main>
+
+<script>
+const API = "http://localhost:8000";
+
+function setQ(text) {
+  document.getElementById("question").value = text;
+  document.getElementById("question").focus();
+}
+
+function setLoading(on) {
+  const btn   = document.getElementById("submitBtn");
+  const icon  = document.getElementById("btnIcon");
+  const label = document.getElementById("btnLabel");
+  btn.disabled = on;
+  if (on) {
+    icon.outerHTML  = '<span class="spinner" id="btnIcon"></span>';
+    label.textContent = "Analyzing…";
+  } else {
+    document.getElementById("btnIcon").outerHTML = '<span class="btn-icon" id="btnIcon">→</span>';
+    label.textContent = "Analyze";
+  }
+}
+
+function skeleton() {
+  return `<div class="skeleton-card">
+    <div class="skeleton-line w60"></div>
+    <div class="skeleton-line w80"></div>
+    <div class="skeleton-line"></div>
+    <div class="skeleton-line w60"></div>
+  </div>`;
+}
+
+function formatValue(v) {
+  if (typeof v === "number") {
+    return Number.isInteger(v) ? v.toLocaleString() : v.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+  }
+  return String(v);
+}
+
+function buildDataTable(rows) {
+  if (!rows || rows.length === 0) return "<em style='color:var(--muted)'>No preview available</em>";
+  const keys = Object.keys(rows[0]);
+  const headers = keys.map(k => `<th>${k}</th>`).join("");
+  const bodyRows = rows.map(r => {
+    const cells = keys.map(k => {
+      const isNum = typeof r[k] === "number";
+      return `<td class="${isNum ? "num" : ""}">${formatValue(r[k])}</td>`;
+    }).join("");
+    return `<tr>${cells}</tr>`;
+  }).join("");
+  return `<div class="table-wrap"><table><thead><tr>${headers}</tr></thead><tbody>${bodyRows}</tbody></table></div>`;
+}
+
+async function runAnalysis() {
+  const question = document.getElementById("question").value.trim();
+  if (!question) {
+    document.getElementById("question").focus();
+    return;
+  }
+
+  setLoading(true);
+  const results = document.getElementById("results");
+  results.innerHTML = skeleton();
+
+  try {
+    const resp = await fetch(`${API}/api/analyze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question }),
+    });
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+      throw new Error(err.detail || "Unknown error");
+    }
+
+    const data = await resp.json();
+    renderResults(data);
+  } catch (err) {
+    results.innerHTML = `<div class="error-card">⚠ ${err.message}</div>`;
+  } finally {
+    setLoading(false);
+  }
+}
+
+function renderResults(data) {
+  const results = document.getElementById("results");
+
+  // Card 1 — View selection
+  const card1 = `
+  <div class="result-card" style="animation-delay:0ms">
+    <div class="card-header">
+      <div class="step-badge cyan">1</div>
+      <div class="card-title">View selected by AI</div>
+    </div>
+    <div class="card-body">
+      <div class="meta-grid">
+        <div class="meta-item">
+          <div class="meta-label">Cube</div>
+          <div class="meta-value">${escHtml(data.chosen_cube)}</div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-label">View</div>
+          <div class="meta-value">${escHtml(data.chosen_view)}</div>
+        </div>
+      </div>
+      <div class="meta-label" style="margin-bottom:6px">Reasoning</div>
+      <div class="reasoning-box">${escHtml(data.reasoning)}</div>
+    </div>
+  </div>`;
+
+  // Card 2 — Data preview
+  const card2 = `
+  <div class="result-card" style="animation-delay:80ms">
+    <div class="card-header">
+      <div class="step-badge green">2</div>
+      <div class="card-title">Data retrieved</div>
+    </div>
+    <div class="card-body">
+      <div class="data-stat">
+        <strong>${data.data_row_count.toLocaleString()}</strong>
+        <span>rows fetched &nbsp;·&nbsp; showing first ${data.data_preview.length}</span>
+      </div>
+      ${buildDataTable(data.data_preview)}
+    </div>
+  </div>`;
+
+  // Card 3 — Analysis
+  const card3 = `
+  <div class="result-card" style="animation-delay:160ms">
+    <div class="card-header">
+      <div class="step-badge purple">3</div>
+      <div class="card-title">Financial analysis</div>
+    </div>
+    <div class="card-body">
+      <div class="analysis-text">${escHtml(data.analysis)}</div>
+    </div>
+  </div>`;
+
+  results.innerHTML = card1 + card2 + card3;
+}
+
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g,"&amp;")
+    .replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;");
+}
+
+// Allow Ctrl+Enter to submit
+document.addEventListener("keydown", e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") runAnalysis();
+});
+
+// Health check on load
+fetch(`${API}/api/health`)
+  .then(r => r.ok ? r.json() : Promise.reject())
+  .then(() => {
+    document.getElementById("statusDot").style.background = "var(--success)";
+    document.getElementById("statusLabel").textContent = "Backend ready";
+  })
+  .catch(() => {
+    document.getElementById("statusDot").style.background = "var(--err)";
+    document.getElementById("statusDot").style.boxShadow = "0 0 6px var(--err)";
+    document.getElementById("statusLabel").textContent = "Backend offline";
+  });
+</script>
+</body>
+</html>
