@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>TM1 AI Analyst &middot; Cubewise</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="frontend.tailwind.js"></script>
+</head>
+<body class="min-h-screen bg-cw-bg font-sans text-sm leading-relaxed text-cw-text antialiased">
+<main class="flex min-h-screen">
+  <aside class="flex w-[290px] shrink-0 flex-col bg-white transition-all duration-200 lg:w-72" id="appSidebar">
+    <div class="flex h-16 items-center gap-3 px-4">
+      <button type="button" class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition hover:bg-cw-bg" id="sidebarToggle" aria-label="Toggle sidebar">
+        <img src="logo.svg" class="h-6 w-6 rounded-md" alt="Cubewise" />
+      </button>
+      <div class="sidebar-expanded min-w-0">
+        <div class="truncate text-[15px] font-bold text-cw-text">cubewise</div>
+        <div class="truncate text-[11px] text-cw-muted">TM1 AI Analyst</div>
+      </div>
+      <button type="button" class="sidebar-expanded ml-auto flex h-8 w-8 items-center justify-center rounded-lg text-cw-muted transition hover:bg-cw-bg hover:text-cw-text" id="collapseSidebarBtn" aria-label="Collapse sidebar">
+        <i class="fa-solid fa-angles-left"></i>
+      </button>
+    </div>
+
+    <div class="sidebar-expanded flex flex-col gap-2 px-3 pb-4">
+      <button type="button" class="flex min-h-10 items-center gap-3 rounded-lg px-3 text-left text-[13px] font-semibold text-cw-text transition hover:bg-cw-bg" id="newChatBtn">
+        <i class="fa-regular fa-pen-to-square w-4 shrink-0 text-center text-[16px] text-cw-text"></i>
+        <span class="sidebar-expanded">New chat</span>
+      </button>
+      <label class="sidebar-expanded relative block">
+        <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-[13px] text-cw-muted"></i>
+        <input id="chatSearch" type="search" class="h-10 w-full rounded-lg bg-cw-bg pl-9 pr-3 text-[13px] text-cw-text outline-none transition placeholder:text-cw-muted focus:bg-white focus:ring-2 focus:ring-cw-blue/15" placeholder="Search chats" />
+      </label>
+    </div>
+
+    <div class="sidebar-collapsed hidden flex flex-1 flex-col items-center gap-3 px-3 pt-4">
+      <button type="button" class="flex h-10 w-10 items-center justify-center rounded-lg text-[15px] text-cw-text transition hover:bg-cw-bg" id="newChatRail" aria-label="New chat"><i class="fa-regular fa-pen-to-square"></i></button>
+      <button type="button" class="flex h-10 w-10 items-center justify-center rounded-lg text-[15px] text-cw-text transition hover:bg-cw-bg" id="openSearchRail" aria-label="Open search"><i class="fa-solid fa-magnifying-glass"></i></button>
+      <button type="button" class="flex h-10 w-10 items-center justify-center rounded-lg text-[15px] text-cw-text transition hover:bg-cw-bg" id="openChatsRail" aria-label="Open chats"><i class="fa-regular fa-comment"></i></button>
+      <button type="button" class="flex h-10 w-10 items-center justify-center rounded-lg text-[15px] text-cw-text transition hover:bg-cw-bg" id="openEmailRail" aria-label="Open email records"><i class="fa-regular fa-envelope"></i></button>
+    </div>
+
+    <div class="sidebar-expanded flex min-h-0 flex-1 flex-col">
+      <section class="min-h-0 px-3" id="chatsSection">
+        <div class="flex items-center gap-2 py-2">
+          <button type="button" class="flex h-6 w-6 items-center justify-center rounded-md text-[11px] text-cw-muted transition hover:bg-cw-bg hover:text-cw-text" id="toggleChatsBtn" aria-expanded="true" aria-controls="historyList">
+            <i class="fa-solid fa-chevron-up"></i>
+          </button>
+          <h2 class="flex-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-cw-muted">Chats</h2>
+          <button type="button" class="text-xs font-medium text-cw-blue hover:text-cw-blueHover" id="clearHistoryBtn">Clear</button>
+        </div>
+        <div class="max-h-[36vh] overflow-y-auto pb-3" id="historyList"></div>
+      </section>
+
+      <section class="mt-auto min-h-0 px-3 pb-3" id="emailSection">
+        <div class="flex items-center gap-2 py-2">
+          <button type="button" class="flex h-6 w-6 items-center justify-center rounded-md text-[11px] text-cw-muted transition hover:bg-cw-bg hover:text-cw-text" id="toggleEmailBtn" aria-expanded="true" aria-controls="emailList">
+            <i class="fa-solid fa-chevron-up"></i>
+          </button>
+          <h2 class="flex-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-cw-muted">Email sent</h2>
+          <button type="button" class="text-xs font-medium text-cw-blue hover:text-cw-blueHover" id="clearEmailBtn">Clear</button>
+        </div>
+        <div class="max-h-[28vh] overflow-y-auto pb-3" id="emailList"></div>
+      </section>
+    </div>
+  </aside>
+
+  <section class="min-w-0 flex-1 px-6 pb-20 pt-10">
+    <div class="mx-auto max-w-[860px]">
+      <section class="mb-8">
+        <div class="mb-3 inline-block rounded-full border border-cw-blueMid bg-cw-blueLite px-3 py-[3px] text-[11px] font-semibold uppercase tracking-[0.1em] text-cw-blue">IBM Planning Analytics</div>
+        <h1 class="mb-2 text-2xl font-bold leading-tight text-cw-text">Ask your financial data anything</h1>
+        <p class="max-w-[520px] text-sm font-normal text-cw-sub">AI reads your TM1 cube views and returns instant financial analysis in plain language - no MDX required.</p>
+      </section>
+
+      <section class="mb-6 overflow-hidden rounded-2xl border border-cw-border bg-white shadow-soft transition focus-within:border-cw-blue focus-within:ring-4 focus-within:ring-cw-blue/10">
+        <div class="px-5 pb-3 pt-[18px]">
+          <label for="q" class="mb-2.5 block text-[11px] font-semibold uppercase tracking-[0.09em] text-cw-blue">Your question</label>
+          <textarea
+            id="q"
+            rows="3"
+            class="min-h-16 w-full resize-none border-0 bg-transparent text-[15px] leading-relaxed text-cw-text outline-none placeholder:text-cw-placeholder focus:ring-0"
+            placeholder="e.g. What is total gross salary by department this month? How does headcount compare to last year?"
+          ></textarea>
+        </div>
+        <div class="flex flex-wrap items-center gap-2 border-t border-cw-borderLow bg-cw-bg px-4 py-2.5">
+          <span class="shrink-0 text-xs text-cw-muted">Suggested:</span>
+          <button type="button" class="pill" onclick="setQ('Show me labor cost summary by department')">Labor cost summary</button>
+          <button type="button" class="pill" onclick="setQ('What is the headcount movement this quarter?')">Headcount movement</button>
+          <button type="button" class="pill" onclick="setQ('Compare gross salary vs base pay by employee')">Salary breakdown</button>
+          <button
+            type="button"
+            class="ml-auto flex shrink-0 items-center gap-2 rounded-md bg-cw-blue px-[18px] py-2 text-[13px] font-semibold text-white shadow-md shadow-cw-blue/30 transition hover:bg-cw-blueHover active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-cw-border disabled:text-cw-muted disabled:shadow-none disabled:active:scale-100"
+            id="runBtn"
+            onclick="go()"
+          >
+            <span id="sp" class="hidden h-[13px] w-[13px] animate-spin rounded-full border-2 border-white/30 border-t-white"></span>
+            <span id="bl">Analyze -&gt;</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="flex flex-col gap-3" id="out"></section>
+    </div>
+  </section>
+
+  <div class="hidden lg:w-16 lg:w-72"></div>
+</main>
+
+<script src="frontend.js"></script>
+</body>
+</html>
