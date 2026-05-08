@@ -2,3 +2,4 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.0
 TM1py==2.1
 anthropic==0.45.2
+requests==2.32.3
