@@ -4,12 +4,13 @@ FastAPI + TM1py + Claude API
 
 Usage:
     export ANTHROPIC_API_KEY=sk-ant-...
-    pip install fastapi uvicorn TM1py anthropic
-    uvicorn backend:app --reload --port 8000
+    pip install -r backend/requirements.txt
+    uvicorn backend.backend:app --reload --port 8000
 """
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from TM1py import TM1Service
 import anthropic
@@ -18,7 +19,12 @@ import json
 import os
 import re
 import smtplib
+from pathlib import Path
 
+BASE_DIR = Path(__file__).resolve().parent
+FRONTEND_DIR = BASE_DIR / "frontend"
+if not FRONTEND_DIR.exists():
+    FRONTEND_DIR = BASE_DIR.parent / "frontend"
 app = FastAPI(title="TM1 AI Analyst")
 
 app.add_middleware(
@@ -29,17 +35,34 @@ app.add_middleware(
 )
 
 # ─── Config — edit these ───────────────────────────────────────────────────────
+def env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a number") from exc
+
+
 TM1_CONFIG = {
-    "address": "localhost",
-    "port": 9510,
-    "user": "admin",
-    "password": "apple",
-    "ssl": False,
-    "async_requests_mode": False,
-    "verify": False,
+    "address": os.environ.get("TM1_ADDRESS", "localhost"),
+    "port": env_int("TM1_PORT", 9510),
+    "user": os.environ.get("TM1_USER", "admin"),
+    "password": os.environ.get("TM1_PASSWORD", "apple"),
+    "ssl": env_bool("TM1_SSL", False),
+    "async_requests_mode": env_bool("TM1_ASYNC_REQUESTS_MODE", False),
+    "verify": env_bool("TM1_VERIFY", False),
 }
 
-CLAUDE_MODEL = "claude-opus-4-5"
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-4-5")
 MAX_DATA_ROWS = 150   # rows sent to Claude for analysis
 APQ_CUBE     = "}APQ Cube Views"
 APQ_VIEW     = "Default"
@@ -124,6 +147,19 @@ def execute_view_safe(cube_name: str, view_name: str) -> list[dict]:
         return rows
 
 # ─── Endpoints ─────────────────────────────────────────────────────────────────
+@app.get("/")
+def index():
+    return FileResponse(FRONTEND_DIR / "frontend.html")
+
+
+@app.get("/{asset_name}")
+def frontend_asset(asset_name: str):
+    allowed_assets = {"frontend.js", "frontend.tailwind.js", "logo.svg"}
+    if asset_name not in allowed_assets:
+        raise HTTPException(404, "Not found")
+    return FileResponse(FRONTEND_DIR / asset_name)
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok", "model": CLAUDE_MODEL}

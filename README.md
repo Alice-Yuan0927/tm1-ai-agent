@@ -2,19 +2,19 @@
 
 ## Prerequisites
 ```bash
-pip install fastapi uvicorn TM1py anthropic
+pip install -r backend/requirements.txt
 ```
 
 ## Configuration
-Edit `backend.py` top section:
-```python
-TM1_CONFIG = {
-    "address": "localhost",
-    "port":    9510,
-    "user":    "admin",
-    "password":"apple",
-    "ssl":     False,
-}
+Set configuration through environment variables or a `.env` file:
+
+```env
+ANTHROPIC_API_KEY=sk-ant-xxxxx
+TM1_ADDRESS=localhost
+TM1_PORT=9510
+TM1_USER=admin
+TM1_PASSWORD=apple
+TM1_SSL=false
 ```
 
 ## Before Running
@@ -57,11 +57,36 @@ It keeps the latest 20 analysis results and can be cleared from the UI.
 ```bash
 # Terminal 1 - backend
 export ANTHROPIC_API_KEY=sk-ant-xxxxx
-uvicorn backend:app --reload --port 8000
+uvicorn backend.backend:app --reload --port 8000
 
 # Terminal 2 - frontend
-open frontend.html
-# or double-click frontend.html in File Explorer
+open frontend/frontend.html
+# or open http://localhost:8000 when the backend is running
+```
+
+## Run with Docker
+From PowerShell:
+
+```powershell
+$env:ANTHROPIC_API_KEY="sk-ant-xxxxx"
+docker compose up --build
+```
+
+Then open:
+
+```text
+http://localhost:8000
+```
+
+By default Docker connects to TM1 on the Windows host at `host.docker.internal:9510`.
+Override these values if your TM1 server is somewhere else:
+
+```powershell
+$env:TM1_ADDRESS="your-tm1-host"
+$env:TM1_PORT="9510"
+$env:TM1_USER="admin"
+$env:TM1_PASSWORD="apple"
+docker compose up --build
 ```
 
 ## Debug Endpoints

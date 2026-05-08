@@ -1,0 +1,22 @@
+services:
+  tm1-ai-analyst:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-opus-4-5}
+      TM1_ADDRESS: ${TM1_ADDRESS:-host.docker.internal}
+      TM1_PORT: ${TM1_PORT:-9510}
+      TM1_USER: ${TM1_USER:-admin}
+      TM1_PASSWORD: ${TM1_PASSWORD:-apple}
+      TM1_SSL: ${TM1_SSL:-false}
+      TM1_VERIFY: ${TM1_VERIFY:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_TLS: ${SMTP_TLS:-true}
