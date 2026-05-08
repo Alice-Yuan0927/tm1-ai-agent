@@ -31,9 +31,18 @@ const esc = value => String(value ?? "")
   .replace(/"/g, "&quot;");
 
 const setQ = text => {
-  document.getElementById("q").value = text;
-  document.getElementById("q").focus();
+  const input = document.getElementById("q");
+  input.value = text;
+  autoResizeQuestion();
+  input.focus();
 };
+
+function autoResizeQuestion() {
+  const input = document.getElementById("q");
+  if (!input) return;
+  input.style.height = "auto";
+  input.style.height = `${Math.min(input.scrollHeight, 176)}px`;
+}
 
 function readStore(key) {
   try {
@@ -126,10 +135,15 @@ function setSidebarCollapsed(collapsed) {
 
 function applySidebarCollapsed(collapsed) {
   const sidebar = document.getElementById("appSidebar");
+  const header = document.getElementById("sidebarHeader");
+  const main = document.getElementById("mainContent");
   const toggle = document.getElementById("sidebarToggle");
 
-  sidebar?.classList.toggle("lg:w-72", !collapsed);
-  sidebar?.classList.toggle("lg:w-16", collapsed);
+  sidebar?.classList.toggle("w-[260px]", !collapsed);
+  sidebar?.classList.toggle("w-12", collapsed);
+  header?.classList.toggle("px-4", !collapsed);
+  header?.classList.toggle("px-1", collapsed);
+  main?.style.removeProperty("transform");
   document.querySelectorAll(".sidebar-expanded").forEach(el => el.classList.toggle("hidden", collapsed));
   document.querySelectorAll(".sidebar-collapsed").forEach(el => el.classList.toggle("hidden", !collapsed));
 
@@ -161,6 +175,7 @@ function applySectionCollapsed(key, collapsed) {
 function newChat() {
   currentResult = null;
   document.getElementById("q").value = "";
+  autoResizeQuestion();
   document.getElementById("out").innerHTML = "";
   document.getElementById("q").focus();
 }
@@ -170,6 +185,7 @@ function openHistory(id) {
   if (!item) return;
   currentResult = item.result;
   document.getElementById("q").value = item.result.question || "";
+  autoResizeQuestion();
   render(item.result);
 }
 
@@ -392,6 +408,7 @@ document.addEventListener("keydown", event => {
   if ((event.ctrlKey || event.metaKey) && event.key === "Enter") go();
 });
 
+document.getElementById("q")?.addEventListener("input", autoResizeQuestion);
 document.getElementById("newChatBtn")?.addEventListener("click", newChat);
 document.getElementById("newChatRail")?.addEventListener("click", newChat);
 document.getElementById("collapseSidebarBtn")?.addEventListener("click", () => setSidebarCollapsed(true));
@@ -431,6 +448,7 @@ renderEmailRecords();
 applySidebarCollapsed(isSidebarCollapsed());
 applySectionCollapsed(CHATS_COLLAPSED_KEY, isSectionCollapsed(CHATS_COLLAPSED_KEY));
 applySectionCollapsed(EMAIL_COLLAPSED_KEY, isSectionCollapsed(EMAIL_COLLAPSED_KEY));
+autoResizeQuestion();
 
 fetch(`${API}/api/health`)
   .then(res => res.ok ? res.json() : Promise.reject())
