@@ -28,7 +28,10 @@ app.add_middleware(
 
 @app.get("/")
 def index():
-    return FileResponse(FRONTEND_DIR / "frontend.html")
+    return FileResponse(
+        FRONTEND_DIR / "frontend.html",
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
 
 
 @app.get("/{asset_name}")
@@ -36,7 +39,10 @@ def frontend_asset(asset_name: str):
     allowed_assets = {"frontend.js", "frontend.tailwind.js", "logo.svg"}
     if asset_name not in allowed_assets:
         raise HTTPException(404, "Not found")
-    return FileResponse(FRONTEND_DIR / asset_name)
+    return FileResponse(
+        FRONTEND_DIR / asset_name,
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
 
 
 @app.get("/api/health")
