@@ -154,7 +154,7 @@ function renderMarkdown(text) {
     }
 
     flushList();
-    html.push(`<p class="mb-4 last:mb-0">${renderInlineMarkdown(trimmed)}</p>`);
+    html.push(`<p class="mb-2 last:mb-0">${renderInlineMarkdown(trimmed)}</p>`);
   }
 
   flushList();
@@ -811,7 +811,7 @@ function renderSingleMessage(data) {
 
     <article class="max-w-[760px] text-cw-text">
       <section>
-        <div class="text-[15px] leading-8 text-cw-sub [&_strong]:font-semibold [&_strong]:text-cw-text [&_em]:italic">${renderMarkdown(data.analysis)}</div>
+        <div class="text-[15px] leading-6 text-cw-sub [&_strong]:font-semibold [&_strong]:text-cw-text [&_em]:italic">${renderMarkdown(data.analysis)}</div>
       </section>
     </article>`;
   }

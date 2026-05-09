@@ -37,8 +37,9 @@ User question: "{question}"
 Previous conversation:
 {_conversation_context(history)}
 
-Choose up to 3 relevant cube views if multiple sources would improve the answer.
-Prefer fewer views when one source is clearly enough. Include alternatives when the user's question may need comparison, summary, detail, or fallback data.
+Always select 2 to 3 cube views: the best-matching primary source first, then 1–2 alternatives as fallbacks.
+Alternatives are essential — if the primary view returns no data, the system will automatically try the next one.
+Choose alternatives that cover the same topic from a different angle (e.g. summary vs detail, different scenario, or a related cube).
 Reply ONLY with valid JSON - no markdown, no extra text:
 {{
   "views": [
@@ -96,23 +97,28 @@ def is_unclear_question(question: str) -> bool:
 
 def find_clarifications(question: str, history: list[dict] | None = None) -> str | None:
     """
-    Checks whether the question is missing key TM1 query parameters.
-    Returns a markdown clarification message or None if no clarification is needed.
-    Only runs when there is no conversation history (first question).
+    Checks whether the conversation is missing key TM1 query parameters.
+    Accumulates all user input across history so answers from follow-up turns
+    are recognised and the agent only asks for what is still missing.
+    Returns a markdown clarification message or None if no clarification needed.
     """
-    if history:
-        return None
+    # Combine every user question in this conversation (oldest first, current last)
+    prior_questions = [msg.get("question", "") for msg in (history or [])]
+    all_user_input = " ".join(prior_questions + [question])
+    combined = all_user_input.lower()
 
-    text = question.lower()
+    # The original question drives the "trend" detection
+    original = (prior_questions[0] if prior_questions else question).lower()
+
     missing = []
 
     # 1. Trend without time grain
-    asks_for_trend = any(term in text for term in [
+    asks_for_trend = any(term in original for term in [
         "trend", "trends", "over time", "movement", "变化", "趋势",
     ])
-    has_time_grain = any(term in text for term in [
+    has_time_grain = any(term in combined for term in [
         "by month", "monthly", "month", "mtd",
-        "by year", "yearly", "annual", "annually", "year",
+        "by year", "yearly", "annual", "annually",
         "by quarter", "quarterly", "quarter", "qtr",
         "week", "weekly", "day", "daily",
         "按月", "按年", "按季度", "季度", "月份", "年度",
@@ -120,22 +126,28 @@ def find_clarifications(question: str, history: list[dict] | None = None) -> str
     if asks_for_trend and not has_time_grain:
         missing.append("**Time breakdown**: by month, by quarter, or by year?")
 
-    # 2. Year — always required
-    has_year = bool(re.search(r"\b(20\d{2}|19\d{2})\b", question))
-    if not has_year:
+    # 2. Year — required unless the user asked for a year-over-year breakdown
+    has_year = bool(re.search(r"\b(20\d{2}|19\d{2})\b", all_user_input))
+    has_yearly_breakdown = any(term in combined for term in [
+        "by year", "yearly", "annual", "annually", "year over year", "yoy", "按年", "年度",
+    ])
+    if not has_year and not has_yearly_breakdown:
         missing.append("**Which year?** (e.g., 2024, 2025, or a range like 2023–2025)")
 
     # 3. Scenario — always required for financial planning data
     scenario_terms = [
-        "actual", "actuals", "budget", "forecast", "plan", "estimate",
+        "actual", "actuals", "act",
+        "budget", "bud", "bdg",
+        "forecast", "fc", "fcst", "fcast",
+        "plan", "estimate",
         "实际", "预算", "预测", "计划",
     ]
-    has_scenario = any(term in text for term in scenario_terms)
+    has_scenario = any(re.search(rf"\b{re.escape(term)}\b", combined) for term in scenario_terms)
     if not has_scenario:
         missing.append("**Which scenario?** (Actual, Budget, Forecast, or e.g. Actual vs Budget)")
 
-    # 4. Month range — only ask when "by month" and year is already provided
-    asks_monthly = any(term in text for term in ["by month", "monthly", "按月"])
+    # 4. Month range — only ask once year is known and "by month" is confirmed
+    asks_monthly = any(term in combined for term in ["by month", "monthly", "按月"])
     if asks_monthly and has_year:
         month_range_terms = [
             "q1", "q2", "q3", "q4", "h1", "h2", "ytd", "full year", "all",
@@ -145,12 +157,19 @@ def find_clarifications(question: str, history: list[dict] | None = None) -> str
             "一月", "二月", "三月", "四月", "五月", "六月",
             "七月", "八月", "九月", "十月", "十一月", "十二月", "全年",
         ]
-        has_month_range = any(term in text for term in month_range_terms)
+        has_month_range = any(term in combined for term in month_range_terms)
         if not has_month_range:
             missing.append("**Which months?** (e.g., Jan–Jun, full year, or YTD)")
 
     if not missing:
         return None
+
+    # On the very first question, append optional dimension filters as a hint
+    if not history:
+        missing.append(
+            "*(Optional)* **Filter by** cost center, grade, or employee category — "
+            "leave blank to include all"
+        )
 
     prefix = (
         "One more detail before I fetch the TM1 data:"

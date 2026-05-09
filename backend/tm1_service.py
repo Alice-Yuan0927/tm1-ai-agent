@@ -200,9 +200,90 @@ def get_view_layout_from_mdx(mdx: str, applied_filters: list[dict] | None = None
     }
 
 
-def find_question_filters(tm1: TM1Service, cube_name: str, question: str, dimensions: list[str]) -> list[dict]:
+# Maps time grain intent to TM1 dimension name substrings to look for in WHERE
+_TIME_GRAIN_DIM_PATTERNS: dict[str, list[str]] = {
+    "month":   ["month", "mth", "mon", "period", "cal"],
+    "quarter": ["quarter", "qtr"],
+    "year":    ["year", "yr", "fy", "fiscal"],
+}
+
+
+def _detect_time_grain(question: str) -> str | None:
+    """Return 'month', 'quarter', 'year', or None based on the question."""
+    text = question.lower()
+    if any(t in text for t in ["by month", "monthly", "按月"]):
+        return "month"
+    if any(t in text for t in ["by quarter", "quarterly", "按季度"]):
+        return "quarter"
+    if any(t in text for t in ["by year", "yearly", "annual", "按年"]):
+        return "year"
+    return None
+
+
+def _find_time_dimension(grain: str, where_filters: list[dict]) -> str | None:
+    """Return the WHERE-filter dimension name that matches the given time grain."""
+    for f in where_filters:
+        dim_lower = f["dimension"].lower()
+        if any(p in dim_lower for p in _TIME_GRAIN_DIM_PATTERNS.get(grain, [])):
+            return f["dimension"]
+    return None
+
+
+def _remove_where_dimension(mdx: str, dimension: str) -> str:
+    """Remove a dimension's member from the MDX WHERE clause."""
+    escaped = re.escape(dimension)
+    # Match [Dim].[AnyHierarchy].[Member] with optional leading comma
+    pattern = rf",?\s*\[{escaped}\]\.\[[^\]]+\]\.\[[^\]]+\]"
+    new_mdx = re.sub(pattern, "", mdx, flags=re.IGNORECASE)
+    new_mdx = re.sub(r"\(\s*,", "(", new_mdx)       # fix leading comma
+    new_mdx = re.sub(r",\s*\)", ")", new_mdx)        # fix trailing comma
+    new_mdx = re.sub(r"\s*WHERE\s*\(\s*\)\s*$", "", new_mdx, flags=re.IGNORECASE | re.DOTALL)
+    return new_mdx
+
+
+def _add_dim_to_columns(mdx: str, dimension: str) -> str:
+    """CrossJoin a dimension's Members onto the existing COLUMNS axis."""
+    pattern = r"(SELECT\s+)(.*?)(\s+ON\s+(?:0|COLUMNS))"
+
+    def _replace(m: re.Match) -> str:
+        existing = m.group(2).strip()
+        # Put measures first, months second so headers read "Measure Month"
+        new_cols = f"CrossJoin({existing}, {{[{dimension}].[{dimension}].Members}})"
+        return m.group(1) + new_cols + m.group(3)
+
+    return re.sub(pattern, _replace, mdx, count=1, flags=re.IGNORECASE | re.DOTALL)
+
+
+_FILTER_STOP_WORDS = {
+    # generic time/structural words that should never match a dimension element
+    "by", "for", "the", "and", "all", "full", "year", "years", "month", "months",
+    "quarter", "quarters", "week", "weeks", "day", "days", "date",
+    "trend", "trends", "cost", "labor", "labour", "data", "show", "what",
+    "total", "summary", "detail", "report", "analysis", "from", "with",
+}
+
+
+_YEAR_DIM_PATTERNS = ["year", "yr", "fy", "fiscal", "calyr", "calyear"]
+
+
+def find_question_filters(
+    tm1: TM1Service,
+    cube_name: str,
+    question: str,
+    dimensions: list[str],
+    year_answers: set[str] | None = None,
+) -> list[dict]:
     question_norm = _normalize_token(question)
     explicit_acronyms = _question_acronyms(question)
+    # Individual lowercase words for prefix matching, minus generic stop-words
+    question_words = {
+        w for w in re.findall(r"[a-z0-9]+", question.lower())
+        if w not in _FILTER_STOP_WORDS
+    }
+    # Normalised year tokens that are known answers to "Which year?" questions.
+    # These are derived from Q&A context, not from value format.
+    year_restricted = {_normalize_token(y) for y in (year_answers or set())}
+
     filters = []
 
     for dimension in dimensions:
@@ -211,18 +292,36 @@ def find_question_filters(tm1: TM1Service, cube_name: str, question: str, dimens
         except Exception:
             continue
 
+        is_year_dim = any(p in dimension.lower() for p in _YEAR_DIM_PATTERNS)
+
         best = None
         for element in elements:
             if str(element).lower().startswith("all "):
                 continue
             element_norm = _normalize_token(element)
             element_acronym = _acronym(element)
-            if not element_norm:
+            if not element_norm or element_norm in _FILTER_STOP_WORDS:
                 continue
 
+            # 1. Exact substring match
             matched = element_norm in question_norm
+            # 2. Acronym match (e.g. "HR" → "Human Resources")
             if not matched and element_acronym and len(element_acronym) >= 2:
                 matched = element_acronym in explicit_acronyms
+            # 3. Prefix match: question word (≥3 chars) is a prefix of the element
+            #    e.g. "act" matches "actual", "bud" matches "budget"
+            if not matched:
+                for qword in question_words:
+                    if len(qword) >= 3 and element_norm.startswith(qword) and element_norm != qword:
+                        matched = True
+                        break
+
+            # Guard: if this element value was explicitly given as an answer to
+            # "Which year?" in the clarification dialog, only allow it to match
+            # year-type dimensions. This is Q&A-context matching, not format heuristics.
+            if matched and year_restricted and element_norm in year_restricted:
+                if not is_year_dim:
+                    matched = False
 
             if matched:
                 score = len(element_norm)
@@ -367,7 +466,12 @@ def get_views_from_apq() -> list[dict]:
     return views
 
 
-def execute_view_safe(cube_name: str, view_name: str, question: str = "") -> tuple[list[dict], dict]:
+def execute_view_safe(
+    cube_name: str,
+    view_name: str,
+    question: str = "",
+    year_answers: set[str] | None = None,
+) -> tuple[list[dict], dict]:
     """Execute a TM1 view and return non-zero rows formatted for Claude."""
     try:
         with TM1Service(**TM1_CONFIG) as tm1:
@@ -378,12 +482,27 @@ def execute_view_safe(cube_name: str, view_name: str, question: str = "") -> tup
                 dimension_names = [str(dimension) for dimension in (getattr(cube, "dimensions", []) or [])]
             except Exception:
                 dimension_names = []
-            question_filters = find_question_filters(tm1, cube_name, question, dimension_names)
+            question_filters = find_question_filters(
+                tm1, cube_name, question, dimension_names, year_answers=year_answers
+            )
             layout["applied_filters"] = question_filters
 
             mdx = layout.get("mdx")
-            if mdx and question_filters:
-                mdx = apply_mdx_filters(mdx, question_filters)
+
+            # Detect time grain intent and find which WHERE dimension to expand
+            grain = _detect_time_grain(question)
+            time_dim = (
+                _find_time_dimension(grain, layout.get("filters", []))
+                if grain and mdx else None
+            )
+
+            if mdx and (question_filters or time_dim):
+                if question_filters:
+                    mdx = apply_mdx_filters(mdx, question_filters)
+                if time_dim:
+                    # Move time dimension from WHERE to COLUMNS so trend data is correct
+                    mdx = _remove_where_dimension(mdx, time_dim)
+                    mdx = _add_dim_to_columns(mdx, time_dim)
                 layout = get_view_layout_from_mdx(mdx, applied_filters=question_filters)
                 cellset = tm1.cells.execute_mdx(mdx, skip_zeros=False)
             else:

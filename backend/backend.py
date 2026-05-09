@@ -6,6 +6,8 @@ Usage:
     uvicorn backend.backend:app --reload --port 8000
 """
 
+import re
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -20,6 +22,22 @@ from .config import CLAUDE_MODEL, FRONTEND_DIR
 from .email_service import send_analysis_email
 from .schemas import EmailRequest, QuestionRequest
 from .tm1_service import build_structured_preview, execute_view_safe, get_views_from_apq
+
+
+def _extract_year_from_qa(history: list[dict], current_question: str) -> set[str]:
+    """
+    Parse conversation history to find values that were explicitly given as
+    answers to 'Which year?' clarification questions.
+    These values should only be used to filter year-type TM1 dimensions.
+    """
+    year_answers: set[str] = set()
+    all_msgs = list(history or []) + [{"question": current_question, "analysis": ""}]
+    for i, msg in enumerate(all_msgs[:-1]):
+        if "Which year?" in msg.get("analysis", ""):
+            answer = all_msgs[i + 1].get("question", "")
+            year_answers.update(re.findall(r"\b(?:20|19)\d{2}\b", answer))
+    return year_answers
+
 
 app = FastAPI(title="TM1 AI Analyst")
 
@@ -67,7 +85,7 @@ def list_views():
 @app.post("/api/analyze")
 def analyze(req: QuestionRequest):
     question = req.question.strip()
-    if is_unclear_question(question):
+    if not req.history and is_unclear_question(question):
         return {
             "success": True,
             "type": "clarification",
@@ -100,8 +118,22 @@ def analyze(req: QuestionRequest):
             "Please fill in the Description column in }APQ Cube Views.",
         )
 
+    # Reconstruct the full effective question from all user turns so that
+    # view selection and filter extraction have complete context, not just
+    # the latest follow-up answer (e.g. "act" alone).
+    if req.history:
+        prior = [msg.get("question", "") for msg in req.history]
+        effective_question = " ".join(q for q in prior + [question] if q.strip())
+    else:
+        effective_question = question
+
+    # Build Q&A-aware filter context so that values answered to specific
+    # clarification questions are only used to filter the matching dimension type.
+    # e.g. "2025" was the answer to "Which year?" → restrict to Year dimensions only.
+    year_answers = _extract_year_from_qa(req.history, question)
+
     try:
-        selection = select_views(question, views, req.history)
+        selection = select_views(effective_question, views, req.history)
     except RuntimeError as exc:
         raise HTTPException(500, str(exc)) from exc
 
@@ -123,7 +155,7 @@ def analyze(req: QuestionRequest):
         seen.add((cube, view))
 
         try:
-            rows, layout = execute_view_safe(cube, view, question)
+            rows, layout = execute_view_safe(cube, view, effective_question, year_answers=year_answers)
         except Exception as exc:
             skipped_sources.append({
                 "cube": cube,
@@ -147,8 +179,8 @@ def analyze(req: QuestionRequest):
             "view": view,
             "reasoning": source_reasoning,
             "data_row_count": len(rows),
-            "data_preview": rows[:12],
-            "structured_preview": build_structured_preview(rows, layout),
+            "data_preview": rows[:15],
+            "structured_preview": build_structured_preview(rows, layout, limit=15),
             "applied_filters": layout.get("applied_filters", []),
             "analysis_rows": rows,
         })
