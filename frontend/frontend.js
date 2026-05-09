@@ -8,6 +8,8 @@ const MAX_HISTORY = 20;
 const MAX_EMAIL_RECORDS = 30;
 
 let currentResult = null;
+let currentChatId = null;
+let currentMessages = [];
 let chatMode = false;
 
 const cls = {
@@ -30,6 +32,134 @@ const esc = value => String(value ?? "")
   .replace(/</g, "&lt;")
   .replace(/>/g, "&gt;")
   .replace(/"/g, "&quot;");
+
+function renderInlineMarkdown(text) {
+  return esc(text)
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
+}
+
+function parseMarkdownTableRow(line) {
+  const trimmed = line.trim();
+  if (!trimmed.includes("|")) return null;
+  return trimmed
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map(cell => cell.trim());
+}
+
+function isMarkdownTableSeparator(line) {
+  const cells = parseMarkdownTableRow(line);
+  return Boolean(cells?.length) && cells.every(cell => /^:?-{3,}:?$/.test(cell));
+}
+
+function renderMarkdownTable(rows) {
+  if (rows.length < 2) return "";
+  const header = rows[0];
+  const body = rows.slice(1);
+
+  const head = header.map((cell, index) => {
+    const align = index === 0 ? "text-left" : "text-right";
+    return `<th class="${align} whitespace-nowrap border-b border-cw-border bg-cw-bg px-3 py-2 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-cw-muted">${renderInlineMarkdown(cell)}</th>`;
+  }).join("");
+
+  const bodyRows = body.map(row => {
+    const cells = header.map((_, index) => {
+      const value = row[index] ?? "";
+      const align = index === 0 ? "text-left font-medium text-cw-text" : "text-right font-mono text-cw-blueText";
+      return `<td class="${align} whitespace-nowrap border-b border-cw-borderLow px-3 py-2">${renderInlineMarkdown(value)}</td>`;
+    }).join("");
+    return `<tr class="last:[&_td]:border-b-0 hover:[&_td]:bg-cw-blueLite/60">${cells}</tr>`;
+  }).join("");
+
+  return `<div class="my-5 overflow-x-auto rounded-xl border border-cw-border bg-white shadow-soft">
+    <table class="w-full border-collapse text-[12.5px] leading-5">
+      <thead><tr>${head}</tr></thead>
+      <tbody>${bodyRows}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderMarkdown(text) {
+  const lines = String(text ?? "").split(/\r?\n/);
+  const html = [];
+  let listItems = [];
+
+  const flushList = () => {
+    if (!listItems.length) return;
+    html.push(`<ul class="my-3 list-disc space-y-1 pl-6">${listItems.join("")}</ul>`);
+    listItems = [];
+  };
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (!trimmed) {
+      flushList();
+      continue;
+    }
+
+    if (/^---+$/.test(trimmed)) {
+      flushList();
+      html.push('<hr class="my-5 border-cw-border" />');
+      continue;
+    }
+
+    const heading = trimmed.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      flushList();
+      const level = heading[1].length;
+      const classes = {
+        1: "mb-4 mt-1 text-[22px] font-semibold leading-tight text-cw-text",
+        2: "mb-3 mt-6 text-[18px] font-semibold leading-tight text-cw-text",
+        3: "mb-2 mt-5 text-[15px] font-semibold leading-tight text-cw-text",
+      }[level];
+      html.push(`<h${level} class="${classes}">${renderInlineMarkdown(heading[2])}</h${level}>`);
+      continue;
+    }
+
+    const tableStart = parseMarkdownTableRow(trimmed);
+    const separatorIndex = (() => {
+      let probe = i + 1;
+      while (probe < lines.length && !lines[probe].trim()) probe += 1;
+      return isMarkdownTableSeparator(lines[probe] || "") ? probe : -1;
+    })();
+    if (tableStart && separatorIndex !== -1) {
+      flushList();
+      const tableRows = [tableStart];
+      i = separatorIndex;
+      while (i + 1 < lines.length) {
+        const next = lines[i + 1].trim();
+        if (!next) {
+          let probe = i + 2;
+          while (probe < lines.length && !lines[probe].trim()) probe += 1;
+          if (!parseMarkdownTableRow(lines[probe] || "")) break;
+          i = probe - 1;
+          continue;
+        }
+        const row = parseMarkdownTableRow(next);
+        if (!row || isMarkdownTableSeparator(next)) break;
+        tableRows.push(row);
+        i += 1;
+      }
+      html.push(renderMarkdownTable(tableRows));
+      continue;
+    }
+
+    const bullet = trimmed.match(/^[-*]\s+(.+)$/);
+    if (bullet) {
+      listItems.push(`<li>${renderInlineMarkdown(bullet[1])}</li>`);
+      continue;
+    }
+
+    flushList();
+    html.push(`<p class="mb-4 last:mb-0">${renderInlineMarkdown(trimmed)}</p>`);
+  }
+
+  flushList();
+  return html.join("");
+}
 
 const setQ = text => {
   const input = document.getElementById("q");
@@ -73,13 +203,37 @@ function getEmailRecords() {
   return readStore(EMAIL_SENT_KEY);
 }
 
-function saveHistory(result) {
+function newId() {
+  return crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
+}
+
+function getItemMessages(item) {
+  if (Array.isArray(item.messages) && item.messages.length) return item.messages;
+  return item.result ? [item.result] : [];
+}
+
+function getLatestResult(item) {
+  const messages = getItemMessages(item);
+  return messages[messages.length - 1] || item.result || {};
+}
+
+function saveCurrentConversation() {
+  if (!currentMessages.length) return;
+
+  const now = new Date().toISOString();
+  if (!currentChatId) currentChatId = newId();
+
+  const history = getHistory();
+  const existing = history.find(item => item.id === currentChatId);
   const item = {
-    id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
-    createdAt: new Date().toISOString(),
-    result,
+    id: currentChatId,
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
+    result: currentMessages[currentMessages.length - 1],
+    messages: currentMessages,
   };
-  writeStore(HISTORY_KEY, [item, ...getHistory()], MAX_HISTORY);
+
+  writeStore(HISTORY_KEY, [item, ...history.filter(entry => entry.id !== currentChatId)], MAX_HISTORY);
   renderHistory();
 }
 
@@ -172,6 +326,15 @@ function clearQuestionInput() {
   updateAnalyzeDisabled();
 }
 
+function scrollToLatest() {
+  window.requestAnimationFrame(() => {
+    window.scrollTo({
+      top: document.documentElement.scrollHeight,
+      behavior: "smooth",
+    });
+  });
+}
+
 function setChatMode(on) {
   chatMode = on;
 
@@ -242,9 +405,7 @@ function setChatMode(on) {
 
 function fmt(value) {
   if (typeof value !== "number") return esc(String(value));
-  return Number.isInteger(value)
-    ? value.toLocaleString()
-    : value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function buildTable(rows) {
@@ -264,6 +425,54 @@ function buildTable(rows) {
   }).join("");
 
   return `<div class="overflow-x-auto rounded-[10px] border border-cw-border"><table class="w-full border-collapse font-mono text-[11.5px]"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
+function buildTm1Preview(source) {
+  const preview = source.structured_preview;
+  if (!preview?.rows?.length) {
+    return buildTable(source.data_preview || []);
+  }
+
+  const rowDimensions = preview.row_dimensions || [];
+  const measureColumns = preview.columns || [];
+  const filters = preview.filters || [];
+  const headers = [...rowDimensions, ...measureColumns];
+
+  const filterChips = filters.length
+    ? `<div class="mb-3 flex flex-wrap gap-2">
+        ${filters.map(filter => `
+          <div class="inline-flex items-center gap-1.5 rounded-md border border-cw-border bg-white px-2.5 py-1 text-[12px] shadow-sm">
+            <span class="font-medium text-cw-muted">${esc(filter.dimension)}:</span>
+            <span class="font-semibold text-cw-text">${esc(filter.element)}</span>
+          </div>
+        `).join("")}
+      </div>`
+    : "";
+
+  const head = headers.map((header, index) => {
+    const isMeasure = index >= rowDimensions.length;
+    const align = isMeasure ? "text-right" : "text-left";
+    const label = isMeasure ? header : header;
+    return `<th class="${align} whitespace-nowrap border-b border-cw-border bg-cw-bg px-3 py-2 text-[11px] font-semibold text-cw-text">${esc(label)}</th>`;
+  }).join("");
+
+  const body = preview.rows.map(row => {
+    const cells = headers.map((header, index) => {
+      const isMeasure = index >= rowDimensions.length;
+      const value = row[header] ?? "";
+      const align = isMeasure ? "text-right font-mono text-cw-blueText" : "text-left text-cw-text";
+      return `<td class="${align} whitespace-nowrap border-b border-cw-borderLow px-3 py-2">${fmt(value)}</td>`;
+    }).join("");
+    return `<tr class="last:[&_td]:border-b-0 hover:[&_td]:bg-cw-blueLite">${cells}</tr>`;
+  }).join("");
+
+  return `${filterChips}
+    <div class="overflow-x-auto rounded-[10px] border border-cw-border bg-white">
+      <table class="w-full border-collapse text-[12px] leading-5">
+        <thead><tr>${head}</tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>`;
 }
 
 function isSidebarCollapsed() {
@@ -321,6 +530,8 @@ function applySectionCollapsed(key, collapsed) {
 
 function newChat() {
   currentResult = null;
+  currentChatId = null;
+  currentMessages = [];
   setChatMode(false);
   document.getElementById("q").value = "";
   updateAnalyzeDisabled();
@@ -333,12 +544,15 @@ function newChat() {
 function openHistory(id) {
   const item = getHistory().find(entry => entry.id === id);
   if (!item) return;
-  currentResult = item.result;
+  currentChatId = item.id;
+  currentMessages = getItemMessages(item);
+  currentResult = currentMessages[currentMessages.length - 1] || null;
   setChatMode(true);
-  document.getElementById("q").value = item.result.question || "";
+  document.getElementById("q").value = "";
   updateAnalyzeDisabled();
   autoResizeQuestion();
-  render(item.result);
+  renderConversation();
+  scrollToLatest();
 }
 
 function formatHistoryGroup(date) {
@@ -375,11 +589,12 @@ function renderHistory() {
 
   const query = document.getElementById("chatSearch")?.value.trim().toLowerCase() || "";
   const history = getHistory().filter(item => {
+    const latest = getLatestResult(item);
     const text = [
-      item.result.question,
-      item.result.chosen_cube,
-      item.result.chosen_view,
-      item.result.analysis,
+      getItemMessages(item).map(message => message.question).join(" "),
+      latest.chosen_cube || "",
+      latest.chosen_view || "",
+      latest.analysis,
     ].join(" ").toLowerCase();
     return text.includes(query);
   });
@@ -391,17 +606,21 @@ function renderHistory() {
 
   let lastGroup = "";
   list.innerHTML = history.map(item => {
-    const group = formatHistoryGroup(item.createdAt);
-    const time = formatHistoryTime(item.createdAt);
+    const latest = getLatestResult(item);
+    const messages = getItemMessages(item);
+    const first = messages[0] || latest;
+    const timestamp = item.updatedAt || item.createdAt;
+    const group = formatHistoryGroup(timestamp);
+    const time = formatHistoryTime(timestamp);
     const groupHeader = group === lastGroup
       ? ""
       : `<div class="px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.08em] text-cw-muted">${esc(group)}</div>`;
     lastGroup = group;
 
     return `${groupHeader}<button type="button" class="mb-1 block w-full rounded-lg px-3 py-2.5 text-left transition hover:bg-cw-bg" onclick="openHistory('${esc(item.id)}')">
-      <div class="truncate text-[13px] font-medium text-cw-text">${esc(item.result.question)}</div>
+      <div class="truncate text-[13px] font-medium text-cw-text">${esc(first.question)}</div>
       <div class="mt-0.5 flex items-center justify-between gap-2 text-[11px] text-cw-muted">
-        <span class="truncate">${esc(item.result.chosen_cube)} / ${esc(item.result.chosen_view)}</span>
+        <span class="truncate">${latest.type === "clarification" ? "Clarification needed" : `${esc(latest.chosen_cube)} / ${esc(latest.chosen_view)}`}</span>
         <span class="shrink-0">${esc(time)}</span>
       </div>
     </button>`;
@@ -437,12 +656,43 @@ function skeleton(question = "") {
   return `<div class="flex justify-end">
     <div class="max-w-[76%] rounded-2xl bg-white px-5 py-3 text-[15px] leading-7 text-cw-text shadow-soft">${esc(question)}</div>
   </div>
-  <div class="max-w-[760px] rounded-2xl bg-white p-[22px] shadow-soft">
-    <div class="mb-2.5 h-2.5 w-2/5 animate-pulse rounded-full bg-cw-border"></div>
-    <div class="mb-2.5 h-2.5 w-4/5 animate-pulse rounded-full bg-cw-border"></div>
-    <div class="mb-2.5 h-2.5 w-2/3 animate-pulse rounded-full bg-cw-border"></div>
-    <div class="h-2.5 w-4/5 animate-pulse rounded-full bg-cw-border"></div>
+  <div class="max-w-[760px] rounded-2xl border border-white/70 bg-white/60 p-[22px] shadow-soft backdrop-blur-md" data-thinking-state="true">
+    <div class="mb-4 flex items-center gap-2 text-[13px] font-semibold text-cw-text">
+      <span class="h-2 w-2 animate-pulse rounded-full bg-cw-blue"></span>
+      <span>Thinking...</span>
+    </div>
+    <div class="space-y-3 text-[13px] text-cw-sub">
+      <div class="thinking-step flex items-center gap-3">
+        <span class="flex h-5 w-5 items-center justify-center rounded-full bg-cw-blueLite text-[10px] font-semibold text-cw-blue">1</span>
+        <span>Understanding the question</span>
+      </div>
+      <div class="thinking-step flex items-center gap-3 opacity-55">
+        <span class="flex h-5 w-5 items-center justify-center rounded-full bg-cw-blueLite text-[10px] font-semibold text-cw-blue">2</span>
+        <span>Selecting the most relevant TM1 cube view</span>
+      </div>
+      <div class="thinking-step flex items-center gap-3 opacity-55">
+        <span class="flex h-5 w-5 items-center justify-center rounded-full bg-cw-blueLite text-[10px] font-semibold text-cw-blue">3</span>
+        <span>Retrieving and previewing TM1 data</span>
+      </div>
+      <div class="thinking-step flex items-center gap-3 opacity-55">
+        <span class="flex h-5 w-5 items-center justify-center rounded-full bg-cw-blueLite text-[10px] font-semibold text-cw-blue">4</span>
+        <span>Preparing the financial response</span>
+      </div>
+    </div>
   </div>`;
+}
+
+function startThinkingProgress() {
+  let index = 0;
+  return window.setInterval(() => {
+    const steps = Array.from(document.querySelectorAll(".thinking-step"));
+    if (!steps.length) return;
+    index = Math.min(index + 1, steps.length - 1);
+    steps.forEach((step, stepIndex) => {
+      step.classList.toggle("opacity-55", stepIndex > index);
+      step.classList.toggle("font-medium", stepIndex === index);
+    });
+  }, 1100);
 }
 
 async function go() {
@@ -452,16 +702,30 @@ async function go() {
     return;
   }
 
+  if (!currentChatId) currentChatId = newId();
   setChatMode(true);
   setLoading(true);
-  document.getElementById("out").innerHTML = skeleton(question);
+  const output = document.getElementById("out");
+  if (!currentMessages.length) output.innerHTML = "";
+  output.insertAdjacentHTML("beforeend", skeleton(question));
+  const thinkingTimer = startThinkingProgress();
   clearQuestionInput();
+  scrollToLatest();
 
   try {
     const res = await fetch(`${API}/api/analyze`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({
+        question,
+        history: currentMessages.map(message => ({
+          question: message.question,
+          analysis: message.analysis,
+          chosen_cube: message.chosen_cube,
+          chosen_view: message.chosen_view,
+          type: message.type || "analysis",
+        })),
+      }),
     });
 
     if (!res.ok) {
@@ -471,11 +735,16 @@ async function go() {
 
     const data = await res.json();
     currentResult = data;
-    saveHistory(data);
-    render(data);
+    currentMessages.push(data);
+    saveCurrentConversation();
+    renderConversation();
+    scrollToLatest();
   } catch (err) {
-    document.getElementById("out").innerHTML = `<div class="flex items-start gap-2.5 rounded-[10px] border border-red-200 bg-red-50 px-[18px] py-3.5 text-[13px] text-red-700 shadow-soft"><span>Warning:</span><span>${esc(err.message)}</span></div>`;
+    output.querySelector('[data-thinking-state="true"]')?.remove();
+    document.getElementById("out").insertAdjacentHTML("beforeend", `<div class="flex items-start gap-2.5 rounded-[10px] border border-red-200 bg-red-50 px-[18px] py-3.5 text-[13px] text-red-700 shadow-soft"><span>Warning:</span><span>${esc(err.message)}</span></div>`);
+    scrollToLatest();
   } finally {
+    window.clearInterval(thinkingTimer);
     setLoading(false);
   }
 }
@@ -483,6 +752,10 @@ async function go() {
 async function sendCurrentEmail(source = "share") {
   if (!currentResult) {
     updateShareStatus("Analyze a question before sharing.", "text-cw-muted");
+    return;
+  }
+  if (currentResult.type === "clarification") {
+    updateShareStatus("No TM1 analysis to email yet.", "text-red-600");
     return;
   }
 
@@ -530,11 +803,56 @@ async function sendCurrentEmail(source = "share") {
   }
 }
 
-function render(data) {
-  setChatMode(true);
-  updateShareStatus("");
-  document.getElementById("out").innerHTML =
-  `<div class="flex justify-end">
+function renderSingleMessage(data) {
+  if (data.type === "clarification") {
+    return `<div class="flex justify-end">
+      <div class="max-w-[76%] rounded-2xl bg-white px-5 py-3 text-[15px] leading-7 text-cw-text shadow-soft">${esc(data.question)}</div>
+    </div>
+
+    <article class="max-w-[760px] text-cw-text">
+      <section>
+        <div class="text-[15px] leading-8 text-cw-sub [&_strong]:font-semibold [&_strong]:text-cw-text [&_em]:italic">${renderMarkdown(data.analysis)}</div>
+      </section>
+    </article>`;
+  }
+
+  const sources = Array.isArray(data.data_sources) && data.data_sources.length
+    ? data.data_sources
+    : [{
+        cube: data.chosen_cube,
+        view: data.chosen_view,
+        reasoning: data.reasoning,
+        data_row_count: data.data_row_count,
+        data_preview: data.data_preview || [],
+      }];
+  const skippedSources = Array.isArray(data.skipped_sources) ? data.skipped_sources : [];
+  const sourceCards = sources.map((source, index) => `
+    <div class="rounded-lg border border-cw-border bg-white px-4 py-3">
+      <div class="mb-2 flex items-center justify-between gap-2">
+        <div class="${cls.label}">Source ${index + 1}</div>
+        <span class="shrink-0 rounded-full border border-[#9de3c5] bg-cw-greenBg px-2 py-0.5 text-[10px] font-semibold text-[#0d7a4c]">${Number(source.data_row_count || 0).toLocaleString()} rows</span>
+      </div>
+      <div class="mb-1 font-mono text-[12.5px] font-medium text-cw-blue">${esc(source.cube)} / ${esc(source.view)}</div>
+      <div class="text-[12px] leading-5 text-cw-sub">${esc(source.reasoning || "")}</div>
+    </div>
+  `).join("");
+  const skippedNotice = skippedSources.length
+    ? `<div class="mt-3 rounded-lg border border-cw-border bg-white/70 px-4 py-3 text-[12px] leading-5 text-cw-muted">
+        Skipped ${skippedSources.length} source${skippedSources.length === 1 ? "" : "s"} with no usable data: ${skippedSources.map(source => `${esc(source.cube)} / ${esc(source.view)}`).join(", ")}.
+      </div>`
+    : "";
+  const tableSections = sources.map((source, index) => `
+    <div class="mb-4 last:mb-0">
+      <div class="mb-2 flex items-baseline justify-between gap-3">
+        <h3 class="text-[14px] font-semibold text-cw-text">${esc(source.cube)} / ${esc(source.view)}</h3>
+        <span class="shrink-0 rounded-full border border-[#9de3c5] bg-cw-greenBg px-2.5 py-0.5 text-[11px] font-semibold text-[#0d7a4c]">${Number(source.data_row_count || 0).toLocaleString()} rows</span>
+      </div>
+      <div class="mb-2 text-xs text-cw-muted">Preview: first ${(source.structured_preview?.rows || source.data_preview || []).length} rows</div>
+      ${buildTm1Preview(source)}
+    </div>
+  `).join("");
+
+  return `<div class="flex justify-end">
     <div class="max-w-[76%] rounded-2xl bg-white px-5 py-3 text-[15px] leading-7 text-cw-text shadow-soft">${esc(data.question)}</div>
   </div>
 
@@ -544,34 +862,35 @@ function render(data) {
     </div>
 
     <section class="mb-5">
-      <h2 class="mb-2 text-[17px] font-semibold text-cw-text">View selected by AI</h2>
-      <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <div class="rounded-lg border border-cw-border bg-white px-4 py-3">
-          <div class="${cls.label}">Cube</div>
-          <div class="${cls.monoValue}">${esc(data.chosen_cube)}</div>
-        </div>
-        <div class="rounded-lg border border-cw-border bg-white px-4 py-3">
-          <div class="${cls.label}">View</div>
-          <div class="${cls.monoValue}">${esc(data.chosen_view)}</div>
-        </div>
+      <h2 class="mb-2 text-[17px] font-semibold text-cw-text">Sources selected by AI</h2>
+      <div class="grid grid-cols-1 gap-3">
+        ${sourceCards}
       </div>
       <div class="mt-3 rounded-lg border border-cw-blueMid bg-cw-blueLite px-4 py-3 text-[13px] leading-relaxed text-cw-sub">${esc(data.reasoning)}</div>
+      ${skippedNotice}
     </section>
 
     <section class="mb-5">
-      <div class="mb-2 flex items-baseline justify-between gap-3">
-        <h2 class="text-[17px] font-semibold text-cw-text">Data retrieved from TM1</h2>
-        <span class="shrink-0 rounded-full border border-[#9de3c5] bg-cw-greenBg px-2.5 py-0.5 text-[11px] font-semibold text-[#0d7a4c]">${data.data_row_count.toLocaleString()} rows</span>
-      </div>
-      <div class="mb-3 text-xs text-cw-muted">Preview: first ${data.data_preview.length} rows</div>
-      ${buildTable(data.data_preview)}
+      <h2 class="mb-3 text-[17px] font-semibold text-cw-text">Data retrieved from TM1</h2>
+      ${tableSections}
     </section>
 
     <section>
-      <h2 class="mb-3 text-[17px] font-semibold text-cw-text">Financial analysis</h2>
-      <div class="whitespace-pre-wrap text-[15px] leading-8 text-cw-sub">${esc(data.analysis)}</div>
+      <div class="text-[15px] leading-8 text-cw-sub [&_strong]:font-semibold [&_strong]:text-cw-text [&_em]:italic">${renderMarkdown(data.analysis)}</div>
     </section>
   </article>`;
+}
+
+function renderConversation() {
+  setChatMode(true);
+  updateShareStatus("");
+  document.getElementById("out").innerHTML = currentMessages.map(renderSingleMessage).join("");
+}
+
+function render(data) {
+  currentMessages = [data];
+  currentResult = data;
+  renderConversation();
 }
 
 document.addEventListener("keydown", event => {

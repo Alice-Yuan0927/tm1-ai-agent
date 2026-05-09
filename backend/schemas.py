@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 
 class QuestionRequest(BaseModel):
     question: str
+    history: list[dict] = Field(default_factory=list)
 
 
 class EmailRequest(BaseModel):

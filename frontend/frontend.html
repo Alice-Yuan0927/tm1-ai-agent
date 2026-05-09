@@ -45,7 +45,7 @@
     </div>
 
     <div class="sidebar-expanded flex min-h-0 flex-1 flex-col">
-      <section class="min-h-0 px-3" id="chatsSection">
+      <section class="flex min-h-0 flex-1 flex-col px-3" id="chatsSection">
         <div class="flex items-center gap-2 py-2">
           <button type="button" class="flex h-6 w-6 items-center justify-center rounded-md text-[11px] text-cw-muted transition hover:bg-cw-bg hover:text-cw-text" id="toggleChatsBtn" aria-expanded="true" aria-controls="historyList">
             <i class="fa-solid fa-chevron-up"></i>
@@ -53,10 +53,10 @@
           <h2 class="flex-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-cw-muted">Chats</h2>
           <button type="button" class="text-xs font-medium text-cw-blue hover:text-cw-blueHover" id="clearHistoryBtn">Clear</button>
         </div>
-        <div class="max-h-[36vh] overflow-y-auto pb-3" id="historyList"></div>
+        <div class="min-h-0 flex-1 overflow-y-auto pb-3" id="historyList"></div>
       </section>
 
-      <section class="mt-auto min-h-0 px-3 pb-3" id="emailSection">
+      <section class="min-h-0 shrink-0 px-3 pb-3" id="emailSection">
         <div class="flex items-center gap-2 py-2">
           <button type="button" class="flex h-6 w-6 items-center justify-center rounded-md text-[11px] text-cw-muted transition hover:bg-cw-bg hover:text-cw-text" id="toggleEmailBtn" aria-expanded="true" aria-controls="emailList">
             <i class="fa-solid fa-chevron-up"></i>
@@ -136,6 +136,6 @@
   <div class="hidden w-12 w-[260px]"></div>
 </main>
 
-<script src="frontend.js?v=chat-share-20260509-10"></script>
+<script src="frontend.js?v=chat-share-20260509-25"></script>
 </body>
 </html>
