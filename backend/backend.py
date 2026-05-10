@@ -6,40 +6,46 @@ Usage:
     uvicorn backend.backend:app --reload --port 8000
 """
 
-import re
-
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from .ai_service import (
+from .ai import (
     find_clarifications,
+    generate_cube_mdx,
+    init_db,
     is_unclear_question,
-    select_views,
+    retrieve_similar,
+    save_query,
+    select_cubes,
     write_multi_source_financial_analysis,
 )
 from .config import CLAUDE_MODEL, FRONTEND_DIR
 from .email_service import send_analysis_email
 from .schemas import EmailRequest, QuestionRequest
-from .tm1_service import build_structured_preview, execute_view_safe, get_views_from_apq
-
-
-def _extract_year_from_qa(history: list[dict], current_question: str) -> set[str]:
-    """
-    Parse conversation history to find values that were explicitly given as
-    answers to 'Which year?' clarification questions.
-    These values should only be used to filter year-type TM1 dimensions.
-    """
-    year_answers: set[str] = set()
-    all_msgs = list(history or []) + [{"question": current_question, "analysis": ""}]
-    for i, msg in enumerate(all_msgs[:-1]):
-        if "Which year?" in msg.get("analysis", ""):
-            answer = all_msgs[i + 1].get("question", "")
-            year_answers.update(re.findall(r"\b(?:20|19)\d{2}\b", answer))
-    return year_answers
+from .tm1 import (
+    build_structured_preview,
+    execute_generated_mdx,
+    get_cube_schema,
+    get_cubes_with_descriptions,
+    init_schema_db,
+    sync_schema,
+)
+from .tm1 import is_empty as _schema_is_empty
 
 
 app = FastAPI(title="TM1 AI Analyst")
+
+
+@app.on_event("startup")
+def _startup() -> None:
+    init_db()
+    init_schema_db()
+    if _schema_is_empty():
+        try:
+            sync_schema()
+        except Exception:
+            pass  # TM1 might not be reachable yet; cache will fill on first /api/sync-schema
 
 app.add_middleware(
     CORSMiddleware,
@@ -73,13 +79,23 @@ def health():
     return {"status": "ok", "model": CLAUDE_MODEL}
 
 
+@app.post("/api/sync-schema")
+def sync_schema_endpoint():
+    """Re-sync the TM1 schema cache (cubes, dimensions, elements)."""
+    try:
+        summary = sync_schema()
+    except Exception as exc:
+        raise HTTPException(500, f"Schema sync failed: {exc}") from exc
+    return {"success": True, **summary}
+
+
 @app.get("/api/views")
 def list_views():
     try:
-        views = get_views_from_apq()
+        cubes = get_cubes_with_descriptions()
     except RuntimeError as exc:
         raise HTTPException(500, str(exc)) from exc
-    return {"count": len(views), "views": views}
+    return {"count": len(cubes), "cubes": cubes}
 
 
 @app.post("/api/analyze")
@@ -107,76 +123,83 @@ def analyze(req: QuestionRequest):
         }
 
     try:
-        views = get_views_from_apq()
+        cubes = get_cubes_with_descriptions()
     except RuntimeError as exc:
         raise HTTPException(500, str(exc)) from exc
 
-    if not views:
-        raise HTTPException(
-            404,
-            "No views with descriptions found. "
-            "Please fill in the Description column in }APQ Cube Views.",
-        )
-
     # Reconstruct the full effective question from all user turns so that
-    # view selection and filter extraction have complete context, not just
-    # the latest follow-up answer (e.g. "act" alone).
+    # cube selection has complete context, not just the latest follow-up answer.
     if req.history:
         prior = [msg.get("question", "") for msg in req.history]
         effective_question = " ".join(q for q in prior + [question] if q.strip())
     else:
         effective_question = question
 
-    # Build Q&A-aware filter context so that values answered to specific
-    # clarification questions are only used to filter the matching dimension type.
-    # e.g. "2025" was the answer to "Which year?" → restrict to Year dimensions only.
-    year_answers = _extract_year_from_qa(req.history, question)
-
     try:
-        selection = select_views(effective_question, views, req.history)
+        selection = select_cubes(effective_question, cubes, req.history)
     except RuntimeError as exc:
         raise HTTPException(500, str(exc)) from exc
 
-    selected_views = selection.get("views") or []
+    selected_cubes = selection.get("cubes") or []
     reasoning = selection.get("reasoning", "")
 
-    if not selected_views:
-        raise HTTPException(500, "AI did not return a valid cube/view")
+    if not selected_cubes:
+        raise HTTPException(500, "AI did not return a valid cube selection")
 
     sources = []
     skipped_sources = []
-    seen = set()
-    for selected in selected_views[:3]:
+    seen_cubes: set[str] = set()
+    for selected in selected_cubes[:3]:
         cube = str(selected.get("cube", "")).strip()
-        view = str(selected.get("view", "")).strip()
         source_reasoning = str(selected.get("reasoning", "")).strip()
-        if not cube or not view or (cube, view) in seen:
+        if not cube or cube in seen_cubes:
             continue
-        seen.add((cube, view))
+        seen_cubes.add(cube)
 
         try:
-            rows, layout = execute_view_safe(cube, view, effective_question, year_answers=year_answers)
-        except Exception as exc:
+            schema = get_cube_schema(cube)
+        except RuntimeError as exc:
             skipped_sources.append({
-                "cube": cube,
-                "view": view,
-                "reasoning": source_reasoning,
+                "cube": cube, "view": "", "reasoning": source_reasoning,
+                "status": f"schema error: {exc}",
+            })
+            continue
+
+        similar = retrieve_similar(effective_question, cube=cube)
+
+        try:
+            mdx = generate_cube_mdx(effective_question, schema, req.history, similar_queries=similar)
+        except RuntimeError as exc:
+            skipped_sources.append({
+                "cube": cube, "view": "", "reasoning": source_reasoning,
+                "status": f"MDX generation error: {exc}",
+            })
+            continue
+
+        try:
+            rows, layout = execute_generated_mdx(cube, mdx)
+        except RuntimeError as exc:
+            skipped_sources.append({
+                "cube": cube, "view": "", "reasoning": source_reasoning,
                 "status": f"error: {exc}",
+                "generated_mdx": mdx,
             })
             continue
 
         if not rows:
             skipped_sources.append({
-                "cube": cube,
-                "view": view,
-                "reasoning": source_reasoning,
+                "cube": cube, "view": "", "reasoning": source_reasoning,
                 "status": "no data",
+                "generated_mdx": mdx,
             })
             continue
 
+        # Persist this successful query for future RAG retrieval
+        save_query(effective_question, cube, mdx, row_count=len(rows))
+
         sources.append({
             "cube": cube,
-            "view": view,
+            "view": "",
             "reasoning": source_reasoning,
             "data_row_count": len(rows),
             "data_preview": rows[:15],
@@ -190,7 +213,7 @@ def analyze(req: QuestionRequest):
             f"{item['cube']} / {item['view']} ({item['status']})"
             for item in skipped_sources
         )
-        raise HTTPException(404, f"No selected TM1 views returned usable data. Tried: {skipped_text}")
+        raise HTTPException(404, f"No selected TM1 cubes returned usable data. Tried: {skipped_text}")
 
     try:
         analysis = write_multi_source_financial_analysis(question, sources, skipped_sources, req.history)

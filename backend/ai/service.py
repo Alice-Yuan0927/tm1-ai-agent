@@ -3,7 +3,7 @@ import re
 
 import anthropic
 
-from .config import ANTHROPIC_API_KEY, CLAUDE_MODEL, MAX_DATA_ROWS
+from ..config import ANTHROPIC_API_KEY, CLAUDE_MODEL
 
 
 def _client() -> anthropic.Anthropic:
@@ -26,26 +26,118 @@ def _conversation_context(history: list[dict] | None) -> str:
     return "\n\n".join(items)
 
 
-def select_views(question: str, views: list[dict], history: list[dict] | None = None) -> dict:
+def _fix_mdx_structure(mdx: str) -> str:
+    """Fix WHERE appearing before FROM — swap them to the correct order."""
+    from_m = re.search(r"(?i)\bFROM\s+\[", mdx)
+    where_m = re.search(r"(?i)\bWHERE\s*\(", mdx)
+    if not from_m or not where_m or where_m.start() > from_m.start():
+        return mdx
+    # Extract FROM [CubeName]
+    from_clause = re.search(r"(?i)(FROM\s+\[[^\]]+\])", mdx)
+    if not from_clause:
+        return mdx
+    fc = from_clause.group(1)
+    # Remove FROM clause from its current position, insert it before WHERE
+    mdx_no_from = mdx[: from_clause.start()] + mdx[from_clause.end():]
+    where_in_stripped = re.search(r"(?i)\bWHERE\s*\(", mdx_no_from)
+    if not where_in_stripped:
+        return mdx
+    pos = where_in_stripped.start()
+    return mdx_no_from[:pos].rstrip() + "\n" + fc + "\n" + mdx_no_from[pos:]
+
+
+
+def generate_cube_mdx(
+    question: str,
+    cube_schema: dict,
+    history: list[dict] | None = None,
+    similar_queries: list[dict] | None = None,
+) -> str:
+    """Generate an MDX SELECT statement for a cube using the cube schema and user question."""
+    cube_name = cube_schema.get("cube", "")
+    dims_json = json.dumps(cube_schema.get("dimensions", []), indent=2, ensure_ascii=False)
+
+    # Few-shot examples from RAG history
+    examples_section = ""
+    if similar_queries:
+        examples = "\n\n".join(
+            f'Question: "{sq["question"]}"\nCube: {sq["cube"]}\nMDX:\n{sq["mdx"]}'
+            for sq in similar_queries
+        )
+        examples_section = f"\nPast successful queries for structural reference (reuse axis layout and CrossJoin patterns only — always verify element names against the schema above):\n{examples}\n"
+
+    prompt = f"""You are an expert TM1 / IBM Planning Analytics MDX query writer.
+
+Cube: {cube_name}
+
+Dimensions and their available elements:
+{dims_json}
+{examples_section}
+User question: "{question}"
+
+Previous conversation:
+{_conversation_context(history)}
+
+Write ONE MDX SELECT statement that answers the question.
+
+REQUIRED structure — follow exactly:
+  SELECT {{[TimeDim].[TimeDim].Members}} ON COLUMNS,
+         {{[Dim1].[Dim1].Members}} * {{[Dim2].[Dim2].Members}} ON ROWS
+  FROM [{cube_name}]
+  WHERE ([Year].[Year].[2025], [Scenario].[Scenario].[ACT], [Measure].[Measure].[Total])
+
+Hard rules:
+1. FROM [{cube_name}] must come immediately after the axes — always BEFORE WHERE
+2. WHERE accepts ONLY single members [Dim].[Dim].[Element]
+   — never .Members, never {{set expressions}}
+3. A dimension must appear on exactly ONE of: COLUMNS, ROWS, or WHERE — never in two places, never omitted
+4. ALL dimensions not on COLUMNS or ROWS MUST appear in WHERE — include every remaining dimension with one element
+5. A 4-digit year (e.g. 2025) ALWAYS goes in the dimension whose name contains "Year" or "Period" — NEVER Employee, Scenario, etc.
+6. For each WHERE dimension the user did NOT specifically filter, use the consolidated element (e.g. "All Employees", "All Cost Centers", "Total") — NEVER a leaf or numeric ID like "1"
+7. Trend/time questions  → time/month dimension on COLUMNS; breakdown dims on ROWS; Year + Scenario + measure in WHERE
+8. Snapshot questions    → measure dimension (is_measure: true) on COLUMNS; breakdown on ROWS; all other dims in WHERE
+9. Single ROWS dimension : {{[Dim].[Dim].Members}} ON ROWS
+10. Multiple ROWS dimensions: {{[Dim1].[Dim1].Members}} * {{[Dim2].[Dim2].Members}} ON ROWS
+    — use the * operator for cross product; NEVER use CrossJoin() function (causes rte 45 in TM1)
+11. Use ONLY element names from the lists above; match case-insensitively to the exact entry
+12. CRITICAL: verify which dimension each element belongs to before writing it — wrong dimension = hard error
+13. Reply with ONLY the raw MDX — no markdown, no comments, nothing else"""
+
+    try:
+        response = _client().messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=800,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        mdx = response.content[0].text.strip()
+        mdx = re.sub(r"```(?:mdx|sql|)\n?", "", mdx).strip("` \n")
+        mdx = _fix_mdx_structure(mdx)
+        mdx = " ".join(mdx.split())  # collapse all whitespace / newlines to single spaces
+        print(f"[MDX] {cube_schema.get('cube')} | {mdx}", flush=True)
+        return mdx
+    except Exception as exc:
+        raise RuntimeError(f"MDX generation error: {exc}") from exc
+
+
+def select_cubes(question: str, cubes: list[dict], history: list[dict] | None = None) -> dict:
     prompt = f"""You are an expert TM1 / IBM Planning Analytics consultant.
 
-Available cubes and views:
-{json.dumps(views, indent=2, ensure_ascii=False)}
+Available cubes:
+{json.dumps(cubes, indent=2, ensure_ascii=False)}
 
 User question: "{question}"
 
 Previous conversation:
 {_conversation_context(history)}
 
-Always select 2 to 3 cube views: the best-matching primary source first, then 1–2 alternatives as fallbacks.
-Alternatives are essential — if the primary view returns no data, the system will automatically try the next one.
-Choose alternatives that cover the same topic from a different angle (e.g. summary vs detail, different scenario, or a related cube).
+Select 2 to 3 cubes: the best-matching primary source first, then 1-2 alternatives as fallbacks.
+Alternatives are essential — if the primary cube returns no data, the system will automatically try the next one.
+Choose alternatives that cover the same topic from a different angle.
 Reply ONLY with valid JSON - no markdown, no extra text:
 {{
-  "views": [
+  "cubes": [
     {{
       "cube": "<exact cube name from the list>",
-      "view": "<exact view name from the list>",
       "reasoning": "<one concise sentence explaining why this source is useful>"
     }}
   ],
@@ -61,22 +153,9 @@ Reply ONLY with valid JSON - no markdown, no extra text:
         raw = re.sub(r"```json|```", "", response.content[0].text).strip()
         return json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"AI selection parsing failed. Raw: {raw}") from exc
+        raise RuntimeError(f"AI cube selection parsing failed. Raw: {raw}") from exc
     except Exception as exc:
-        raise RuntimeError(f"AI selection error: {exc}") from exc
-
-
-def select_view(question: str, views: list[dict], history: list[dict] | None = None) -> dict:
-    selection = select_views(question, views, history)
-    selected = selection.get("views") or []
-    if not selected:
-        return {}
-    first = selected[0]
-    return {
-        "cube": first.get("cube", ""),
-        "view": first.get("view", ""),
-        "reasoning": first.get("reasoning") or selection.get("reasoning", ""),
-    }
+        raise RuntimeError(f"AI cube selection error: {exc}") from exc
 
 
 def is_unclear_question(question: str) -> bool:
@@ -177,45 +256,6 @@ def find_clarifications(question: str, history: list[dict] | None = None) -> str
         else "Before I pull the TM1 data, I need a few more details:"
     )
     return prefix + "\n\n" + "\n".join(f"- {part}" for part in missing)
-
-
-def write_financial_analysis(
-    question: str,
-    chosen_cube: str,
-    chosen_view: str,
-    rows: list[dict],
-    history: list[dict] | None = None,
-) -> str:
-    prompt = f"""You are a senior financial analyst reviewing IBM Planning Analytics data.
-
-User question: "{question}"
-
-Previous conversation:
-{_conversation_context(history)}
-
-Data source - Cube: "{chosen_cube}"  |  View: "{chosen_view}"
-Total data rows: {len(rows)}
-
-Data (first {min(len(rows), MAX_DATA_ROWS)} rows):
-{json.dumps(rows, indent=2, ensure_ascii=False)}
-
-Write a concise financial analysis that:
-1. Directly answers the user question
-2. Calls out key figures, trends, and variances
-3. Flags anything unusual
-4. Suggests one or two follow-up questions if relevant
-
-Use specific numbers from the data. Keep it readable - no bullet-point spam."""
-
-    try:
-        response = _client().messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=1500,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.content[0].text.strip()
-    except Exception as exc:
-        raise RuntimeError(f"AI analysis error: {exc}") from exc
 
 
 def write_multi_source_financial_analysis(

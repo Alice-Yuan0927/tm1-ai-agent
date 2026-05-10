@@ -46,5 +46,3 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 RESEND_FROM = os.environ.get("RESEND_FROM", "").strip()
 MAX_DATA_ROWS = 150
-APQ_CUBE = "}APQ Cube Views"
-APQ_VIEW = "Default"
