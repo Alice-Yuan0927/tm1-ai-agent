@@ -6,11 +6,14 @@ Usage:
     uvicorn backend.backend:app --reload --port 8000
 """
 
+import json as _json
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from .ai import (
+    _parse_suggestions,
     find_clarifications,
     generate_cube_mdx,
     init_db,
@@ -18,7 +21,7 @@ from .ai import (
     retrieve_similar,
     save_query,
     select_cubes,
-    write_multi_source_financial_analysis,
+    stream_financial_analysis,
 )
 from .config import CLAUDE_MODEL, FRONTEND_DIR
 from .email_service import send_analysis_email
@@ -103,39 +106,44 @@ def list_views():
     return {"count": len(cubes), "cubes": cubes}
 
 
-@app.post("/api/analyze")
-def analyze(req: QuestionRequest):
+def _analyze_sse_gen(req: QuestionRequest):
+    """Sync SSE generator for /api/analyze. Yields `data: {...}\n\n` strings."""
+
+    def evt(data: dict) -> str:
+        return f"data: {_json.dumps(data, ensure_ascii=False)}\n\n"
+
     question = req.question.strip()
+
+    # Fast-path: clarification (no TM1 needed)
     if not req.history and is_unclear_question(question):
-        return {
-            "success": True,
-            "type": "clarification",
-            "question": question,
+        yield evt({"type": "done", "data": {
+            "success": True, "type": "clarification", "question": question,
             "analysis": (
                 "Looks like this may be a test message or an incomplete question. "
                 "Ask me something specific about your TM1 data, such as **labor cost trends**, "
                 "**headcount movement**, **salary variance**, **actuals vs budget**, "
                 "or a specific cube, cost center, month, or scenario."
             ),
-        }
+        }})
+        return
+
     clarification = find_clarifications(question, req.history)
     if clarification:
-        return {
-            "success": True,
-            "type": "clarification",
-            "question": question,
-            "analysis": clarification,
-        }
+        yield evt({"type": "done", "data": {
+            "success": True, "type": "clarification",
+            "question": question, "analysis": clarification,
+        }})
+        return
 
+    # Step 1: select cubes
+    yield evt({"type": "step", "step": 1})
     try:
         cubes = get_cubes_with_descriptions()
     except RuntimeError as exc:
-        raise HTTPException(500, str(exc)) from exc
+        yield evt({"type": "error", "message": str(exc)}); return
 
-    # Reconstruct the full effective question from all user turns so that
-    # cube selection has complete context, not just the latest follow-up answer.
     if req.history:
-        prior = [msg.get("question", "") for msg in req.history]
+        prior = [m.get("question", "") for m in req.history]
         effective_question = " ".join(q for q in prior + [question] if q.strip())
     else:
         effective_question = question
@@ -143,17 +151,19 @@ def analyze(req: QuestionRequest):
     try:
         selection = select_cubes(effective_question, cubes, req.history)
     except RuntimeError as exc:
-        raise HTTPException(500, str(exc)) from exc
+        yield evt({"type": "error", "message": str(exc)}); return
 
     selected_cubes = selection.get("cubes") or []
     reasoning = selection.get("reasoning", "")
-
     if not selected_cubes:
-        raise HTTPException(500, "AI did not return a valid cube selection")
+        yield evt({"type": "error", "message": "AI did not return a valid cube selection"}); return
 
-    sources = []
-    skipped_sources = []
+    # Step 2: fetch data from each cube
+    yield evt({"type": "step", "step": 2})
+    sources: list[dict] = []
+    skipped_sources: list[dict] = []
     seen_cubes: set[str] = set()
+
     for selected in selected_cubes[:3]:
         cube = str(selected.get("cube", "")).strip()
         source_reasoning = str(selected.get("reasoning", "")).strip()
@@ -164,47 +174,26 @@ def analyze(req: QuestionRequest):
         try:
             schema = get_cube_schema(cube)
         except RuntimeError as exc:
-            skipped_sources.append({
-                "cube": cube, "reasoning": source_reasoning,
-                "status": f"schema error: {exc}",
-            })
-            continue
+            skipped_sources.append({"cube": cube, "reasoning": source_reasoning, "status": f"schema error: {exc}"}); continue
 
         similar = retrieve_similar(effective_question, cube=cube)
 
         try:
             mdx = generate_cube_mdx(effective_question, schema, req.history, similar_queries=similar)
         except RuntimeError as exc:
-            skipped_sources.append({
-                "cube": cube, "reasoning": source_reasoning,
-                "status": f"MDX generation error: {exc}",
-            })
-            continue
+            skipped_sources.append({"cube": cube, "reasoning": source_reasoning, "status": f"MDX error: {exc}"}); continue
 
         try:
             rows, layout = execute_generated_mdx(cube, mdx)
         except RuntimeError as exc:
-            skipped_sources.append({
-                "cube": cube, "reasoning": source_reasoning,
-                "status": f"error: {exc}",
-                "generated_mdx": mdx,
-            })
-            continue
+            skipped_sources.append({"cube": cube, "reasoning": source_reasoning, "status": f"error: {exc}", "generated_mdx": mdx}); continue
 
         if not rows:
-            skipped_sources.append({
-                "cube": cube, "reasoning": source_reasoning,
-                "status": "no data",
-                "generated_mdx": mdx,
-            })
-            continue
+            skipped_sources.append({"cube": cube, "reasoning": source_reasoning, "status": "no data", "generated_mdx": mdx}); continue
 
-        # Persist this successful query for future RAG retrieval
         save_query(effective_question, cube, mdx, row_count=len(rows))
-
         sources.append({
-            "cube": cube,
-            "reasoning": source_reasoning,
+            "cube": cube, "reasoning": source_reasoning,
             "data_row_count": len(rows),
             "data_preview": rows[:15],
             "structured_preview": build_structured_preview(rows, layout, limit=15),
@@ -213,35 +202,45 @@ def analyze(req: QuestionRequest):
         })
 
     if not sources:
-        skipped_text = "; ".join(
-            f"{item['cube']} ({item['status']})"
-            for item in skipped_sources
-        )
-        raise HTTPException(404, f"No selected TM1 cubes returned usable data. Tried: {skipped_text}")
+        skipped_text = "; ".join(f"{s['cube']} ({s['status']})" for s in skipped_sources)
+        yield evt({"type": "error", "message": f"No usable data. Tried: {skipped_text}"}); return
 
+    # Step 3: signal data ready, send sources to frontend
+    yield evt({"type": "step", "step": 3})
+    response_sources = [{k: v for k, v in s.items() if k != "analysis_rows"} for s in sources]
+    yield evt({"type": "sources", "sources": response_sources, "skipped": skipped_sources, "reasoning": reasoning})
+
+    # Stream analysis text chunk by chunk
+    full_text = ""
     try:
-        analysis = write_multi_source_financial_analysis(question, sources, skipped_sources, req.history)
+        for chunk in stream_financial_analysis(question, sources, skipped_sources, req.history):
+            full_text += chunk
+            yield evt({"type": "chunk", "text": chunk})
     except RuntimeError as exc:
-        raise HTTPException(500, str(exc)) from exc
+        yield evt({"type": "error", "message": str(exc)}); return
 
-    first_source = sources[0]
-    response_sources = [
-        {key: value for key, value in source.items() if key != "analysis_rows"}
-        for source in sources
-    ]
-
-    return {
-        "success": True,
-        "type": "analysis",
-        "question": question,
-        "chosen_cube": first_source["cube"],
+    analysis, suggestions = _parse_suggestions(full_text)
+    first = sources[0]
+    yield evt({"type": "done", "data": {
+        "success": True, "type": "analysis", "question": question,
+        "chosen_cube": first["cube"],
         "reasoning": reasoning,
-        "data_row_count": sum(source["data_row_count"] for source in sources),
-        "data_preview": first_source["data_preview"],
+        "data_row_count": sum(s["data_row_count"] for s in sources),
+        "data_preview": first["data_preview"],
         "data_sources": response_sources,
         "skipped_sources": skipped_sources,
         "analysis": analysis,
-    }
+        "suggestions": suggestions,
+    }})
+
+
+@app.post("/api/analyze")
+def analyze(req: QuestionRequest):
+    return StreamingResponse(
+        _analyze_sse_gen(req),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/api/send-email")

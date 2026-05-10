@@ -258,14 +258,13 @@ def find_clarifications(question: str, history: list[dict] | None = None) -> str
     return prefix + "\n\n" + "\n".join(f"- {part}" for part in missing)
 
 
-def write_multi_source_financial_analysis(
+def _analysis_prompt(
     question: str,
     sources: list[dict],
-    skipped_sources: list[dict] | None = None,
-    history: list[dict] | None = None,
+    skipped_sources: list[dict],
+    history: list[dict] | None,
 ) -> str:
-    skipped_sources = skipped_sources or []
-    prompt = f"""You are a senior financial analyst reviewing IBM Planning Analytics data.
+    return f"""You are a senior financial analyst reviewing IBM Planning Analytics data.
 
 User question: "{question}"
 
@@ -282,16 +281,43 @@ Write a concise financial analysis that:
 1. Directly answers the user question using all useful sources
 2. Calls out key figures, trends, and variances
 3. Mentions when a selected source had no usable data only if relevant
-4. Suggests one or two follow-up questions if relevant
 
-Use specific numbers from the data. Keep it readable - no bullet-point spam."""
+Use specific numbers from the data. Keep it readable — no bullet-point spam.
 
+After the analysis, on a new line output exactly this and nothing else:
+SUGGESTIONS: ["<follow-up question 1>", "<follow-up question 2>", "<follow-up question 3>"]"""
+
+
+def _parse_suggestions(text: str) -> tuple[str, list[str]]:
+    marker = "SUGGESTIONS:"
+    if marker not in text:
+        return text.strip(), []
+    parts = text.rsplit(marker, 1)
+    analysis = parts[0].strip()
     try:
-        response = _client().messages.create(
+        suggestions = json.loads(parts[1].strip())
+        if isinstance(suggestions, list):
+            return analysis, [str(s) for s in suggestions[:3]]
+    except (json.JSONDecodeError, IndexError):
+        pass
+    return text.strip(), []
+
+
+def stream_financial_analysis(
+    question: str,
+    sources: list[dict],
+    skipped_sources: list[dict] | None = None,
+    history: list[dict] | None = None,
+):
+    """Sync generator: yields text chunks from the Claude streaming API."""
+    prompt = _analysis_prompt(question, sources, skipped_sources or [], history)
+    try:
+        with _client().messages.stream(
             model=CLAUDE_MODEL,
             max_tokens=1800,
             messages=[{"role": "user", "content": prompt}],
-        )
-        return response.content[0].text.strip()
+        ) as stream:
+            for text in stream.text_stream:
+                yield text
     except Exception as exc:
         raise RuntimeError(f"AI analysis error: {exc}") from exc
