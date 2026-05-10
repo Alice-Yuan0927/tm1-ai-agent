@@ -65,7 +65,12 @@ def index():
 
 @app.get("/{asset_name}")
 def frontend_asset(asset_name: str):
-    allowed_assets = {"frontend.js", "frontend.tailwind.js", "logo.svg"}
+    allowed_assets = {
+        "frontend.tailwind.js", "logo.svg",
+        "config.js", "markdown.js", "charts.js", "table.js",
+        "store.js", "share.js", "ui.js", "sidebar.js",
+        "render.js", "api.js", "main.js",
+    }
     if asset_name not in allowed_assets:
         raise HTTPException(404, "Not found")
     return FileResponse(
