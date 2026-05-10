@@ -24,6 +24,15 @@ function getLatestResult(item) {
   return messages[messages.length - 1] || item.result || {};
 }
 
+function _stripLargeFields(msg) {
+  if (!msg || msg.type !== "analysis") return msg;
+  const sources = (msg.data_sources || []).map(s => {
+    const { analysis_rows, ...rest } = s;
+    return rest;
+  });
+  return { ...msg, data_sources: sources };
+}
+
 function saveCurrentConversation() {
   if (!currentMessages.length) return;
   const now = new Date().toISOString();
@@ -34,8 +43,8 @@ function saveCurrentConversation() {
     id: currentChatId,
     createdAt: existing?.createdAt || now,
     updatedAt: now,
-    result: currentMessages[currentMessages.length - 1],
-    messages: currentMessages,
+    result: _stripLargeFields(currentMessages[currentMessages.length - 1]),
+    messages: currentMessages.map(_stripLargeFields),
   };
   writeStore(HISTORY_KEY, [item, ...history.filter(e => e.id !== currentChatId)], MAX_HISTORY);
   renderHistory();

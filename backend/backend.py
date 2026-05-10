@@ -7,10 +7,11 @@ Usage:
 """
 
 import json as _json
+from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from .ai import (
     _parse_suggestions,
@@ -160,8 +161,8 @@ def _analyze_sse_gen(req: QuestionRequest):
 
     # Step 2: fetch data from each cube
     yield evt({"type": "step", "step": 2})
-    sources: list[dict] = []
-    skipped_sources: list[dict] = []
+    sources: list[dict[str, Any]] = []
+    skipped_sources: list[dict[str, Any]] = []
     seen_cubes: set[str] = set()
 
     for selected in selected_cubes[:3]:
@@ -211,7 +212,7 @@ def _analyze_sse_gen(req: QuestionRequest):
     yield evt({"type": "sources", "sources": response_sources, "skipped": skipped_sources, "reasoning": reasoning})
 
     # Stream analysis text chunk by chunk
-    full_text = ""
+    full_text: str = ""
     try:
         for chunk in stream_financial_analysis(question, sources, skipped_sources, req.history):
             full_text += chunk
@@ -221,6 +222,10 @@ def _analyze_sse_gen(req: QuestionRequest):
 
     analysis, suggestions = _parse_suggestions(full_text)
     first = sources[0]
+    # response_sources already excludes analysis_rows; re-add them so the
+    # frontend can offer a full CSV export. store.js strips before localStorage.
+    for rs, s in zip(response_sources, sources):
+        rs["analysis_rows"] = s["analysis_rows"]
     yield evt({"type": "done", "data": {
         "success": True, "type": "analysis", "question": question,
         "chosen_cube": first["cube"],
@@ -240,6 +245,26 @@ def analyze(req: QuestionRequest):
         _analyze_sse_gen(req),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/api/export-excel")
+def export_excel(payload: dict[str, Any] = Body(...)):
+    from .excel_service import build_excel
+    try:
+        xlsx = build_excel(
+            cube=str(payload.get("cube", "")),
+            question=str(payload.get("question", "")),
+            analysis_rows=list(payload.get("analysis_rows", [])),
+            structured_meta=dict(payload.get("structured_preview", {})),
+        )
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc
+    filename = str(payload.get("cube", "export")).replace("/", "-") + ".xlsx"
+    return Response(
+        content=xlsx,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

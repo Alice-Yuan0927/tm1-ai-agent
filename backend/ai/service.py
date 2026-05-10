@@ -1,5 +1,6 @@
 import json
 import re
+from collections.abc import Iterator
 
 import anthropic
 
@@ -308,7 +309,7 @@ def stream_financial_analysis(
     sources: list[dict],
     skipped_sources: list[dict] | None = None,
     history: list[dict] | None = None,
-):
+) -> Iterator[str]:
     """Sync generator: yields text chunks from the Claude streaming API."""
     prompt = _analysis_prompt(question, sources, skipped_sources or [], history)
     try:

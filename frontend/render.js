@@ -41,7 +41,7 @@ function startThinkingProgress() {
   }, 1100);
 }
 
-function downloadCsv(msgIdx, srcIdx) {
+async function downloadExcel(msgIdx, srcIdx) {
   const msg = currentMessages[msgIdx];
   if (!msg) return;
   const sources = Array.isArray(msg.data_sources) && msg.data_sources.length
@@ -50,35 +50,38 @@ function downloadCsv(msgIdx, srcIdx) {
   const source = sources[srcIdx];
   if (!source) return;
 
-  let rows;
-  const preview = source.structured_preview;
-  if (preview?.rows?.length) {
-    const headers = [...(preview.row_dimensions || []), ...(preview.columns || [])];
-    rows = [headers, ...preview.rows.map(row => headers.map(h => row[h] ?? ""))];
-  } else {
-    const raw = source.data_preview || [];
-    if (!raw.length) return;
-    const keys = Object.keys(raw[0]);
-    rows = [keys, ...raw.map(row => keys.map(k => row[k] ?? ""))];
+  const btn = document.querySelector(`[data-xlsx="${msgIdx}-${srcIdx}"]`);
+  if (btn) { btn.disabled = true; btn.textContent = "Exporting…"; }
+
+  try {
+    const res = await fetch(`${API}/api/export-excel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        cube: source.cube,
+        analysis_rows: source.analysis_rows || source.data_preview || [],
+        structured_preview: source.structured_preview || {},
+      }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({detail: res.statusText}))).detail);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = Object.assign(document.createElement("a"), {
+      href: url,
+      download: `${(source.cube || "data").replace(/[/\\?%*:|"<>]/g, "-")}.xlsx`,
+    });
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    alert(`Export failed: ${err.message}`);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fa-solid fa-file-excel text-[9px]"></i> Excel';
+    }
   }
-
-  const csv = rows.map(row =>
-    row.map(v => {
-      const s = String(v ?? "");
-      return /[,"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-    }).join(",")
-  ).join("\n");
-
-  const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = Object.assign(document.createElement("a"), {
-    href: url,
-    download: `${(source.cube || "data").replace(/[/\\?%*:|"<>]/g, "-")}.csv`,
-  });
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
 }
 
 function _sourceCardsHtml(sources, reasoning, skippedSources) {
@@ -107,9 +110,9 @@ function _tableSectionsHtml(sources, msgIdx) {
   return sources.map((source, index) => {
     const chartId = `chart-${Date.now()}-${index}`;
     const csvBtn = msgIdx != null
-      ? `<button type="button" onclick="downloadCsv(${msgIdx},${index})"
-           class="flex items-center gap-1 rounded-md border border-cw-border bg-white px-2 py-0.5 text-[11px] text-cw-muted transition hover:border-cw-blue hover:text-cw-blue">
-           <i class="fa-solid fa-download text-[9px]"></i> CSV
+      ? `<button type="button" data-xlsx="${msgIdx}-${index}" onclick="downloadExcel(${msgIdx},${index})"
+           class="flex items-center gap-1 rounded-md border border-cw-border bg-white px-2 py-0.5 text-[11px] text-cw-muted transition hover:border-green-600 hover:text-green-600">
+           <i class="fa-solid fa-file-excel text-[9px]"></i> Excel
          </button>`
       : "";
     return `
