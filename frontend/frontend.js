@@ -245,7 +245,6 @@ function saveEmailRecord(to) {
     to,
     question: currentResult.question,
     chosenCube: currentResult.chosen_cube,
-    chosenView: currentResult.chosen_view,
   };
   writeStore(EMAIL_SENT_KEY, [item, ...getEmailRecords()], MAX_EMAIL_RECORDS);
   renderEmailRecords();
@@ -593,7 +592,6 @@ function renderHistory() {
     const text = [
       getItemMessages(item).map(message => message.question).join(" "),
       latest.chosen_cube || "",
-      latest.chosen_view || "",
       latest.analysis,
     ].join(" ").toLowerCase();
     return text.includes(query);
@@ -620,7 +618,7 @@ function renderHistory() {
     return `${groupHeader}<button type="button" class="mb-1 block w-full rounded-lg px-3 py-2.5 text-left transition hover:bg-cw-bg" onclick="openHistory('${esc(item.id)}')">
       <div class="truncate text-[13px] font-medium text-cw-text">${esc(first.question)}</div>
       <div class="mt-0.5 flex items-center justify-between gap-2 text-[11px] text-cw-muted">
-        <span class="truncate">${latest.type === "clarification" ? "Clarification needed" : `${esc(latest.chosen_cube)} / ${esc(latest.chosen_view)}`}</span>
+        <span class="truncate">${latest.type === "clarification" ? "Clarification needed" : esc(latest.chosen_cube)}</span>
         <span class="shrink-0">${esc(time)}</span>
       </div>
     </button>`;
@@ -668,7 +666,7 @@ function skeleton(question = "") {
       </div>
       <div class="thinking-step flex items-center gap-3 opacity-55">
         <span class="flex h-5 w-5 items-center justify-center rounded-full bg-cw-blueLite text-[10px] font-semibold text-cw-blue">2</span>
-        <span>Selecting the most relevant TM1 cube view</span>
+        <span>Selecting the most relevant TM1 cube</span>
       </div>
       <div class="thinking-step flex items-center gap-3 opacity-55">
         <span class="flex h-5 w-5 items-center justify-center rounded-full bg-cw-blueLite text-[10px] font-semibold text-cw-blue">3</span>
@@ -722,7 +720,6 @@ async function go() {
           question: message.question,
           analysis: message.analysis,
           chosen_cube: message.chosen_cube,
-          chosen_view: message.chosen_view,
           type: message.type || "analysis",
         })),
       }),
@@ -781,11 +778,11 @@ async function sendCurrentEmail(source = "share") {
         to,
         question: currentResult.question,
         chosen_cube: currentResult.chosen_cube,
-        chosen_view: currentResult.chosen_view,
         reasoning: currentResult.reasoning,
         data_row_count: currentResult.data_row_count,
         data_preview: currentResult.data_preview || [],
         analysis: currentResult.analysis,
+        history: currentMessages.map(m => ({ question: m.question, analysis: m.analysis })),
       }),
     });
 
@@ -805,22 +802,22 @@ async function sendCurrentEmail(source = "share") {
 
 function renderSingleMessage(data) {
   if (data.type === "clarification") {
-    return `<div class="flex justify-end">
-      <div class="max-w-[76%] rounded-2xl bg-white px-5 py-3 text-[15px] leading-7 text-cw-text shadow-soft">${esc(data.question)}</div>
-    </div>
-
-    <article class="max-w-[760px] text-cw-text">
-      <section>
-        <div class="text-[15px] leading-6 text-cw-sub [&_strong]:font-semibold [&_strong]:text-cw-text [&_em]:italic">${renderMarkdown(data.analysis)}</div>
-      </section>
-    </article>`;
+    return `<div class="mb-8 w-full">
+      <div class="flex justify-end mb-3">
+        <div class="max-w-[76%] rounded-2xl bg-white px-5 py-3 text-[15px] leading-7 text-cw-text shadow-soft">${esc(data.question)}</div>
+      </div>
+      <article class="w-full max-w-[760px] text-cw-text">
+        <section>
+          <div class="text-[15px] leading-6 text-cw-sub [&_strong]:font-semibold [&_strong]:text-cw-text [&_em]:italic">${renderMarkdown(data.analysis)}</div>
+        </section>
+      </article>
+    </div>`;
   }
 
   const sources = Array.isArray(data.data_sources) && data.data_sources.length
     ? data.data_sources
     : [{
         cube: data.chosen_cube,
-        view: data.chosen_view,
         reasoning: data.reasoning,
         data_row_count: data.data_row_count,
         data_preview: data.data_preview || [],
@@ -832,19 +829,19 @@ function renderSingleMessage(data) {
         <div class="${cls.label}">Source ${index + 1}</div>
         <span class="shrink-0 rounded-full border border-[#9de3c5] bg-cw-greenBg px-2 py-0.5 text-[10px] font-semibold text-[#0d7a4c]">${Number(source.data_row_count || 0).toLocaleString()} rows</span>
       </div>
-      <div class="mb-1 font-mono text-[12.5px] font-medium text-cw-blue">${esc(source.cube)} / ${esc(source.view)}</div>
+      <div class="mb-1 font-mono text-[12.5px] font-medium text-cw-blue">${esc(source.cube)}</div>
       <div class="text-[12px] leading-5 text-cw-sub">${esc(source.reasoning || "")}</div>
     </div>
   `).join("");
   const skippedNotice = skippedSources.length
     ? `<div class="mt-3 rounded-lg border border-cw-border bg-white/70 px-4 py-3 text-[12px] leading-5 text-cw-muted">
-        Skipped ${skippedSources.length} source${skippedSources.length === 1 ? "" : "s"} with no usable data: ${skippedSources.map(source => `${esc(source.cube)} / ${esc(source.view)}`).join(", ")}.
+        Skipped ${skippedSources.length} source${skippedSources.length === 1 ? "" : "s"} with no usable data: ${skippedSources.map(source => esc(source.cube)).join(", ")}.
       </div>`
     : "";
   const tableSections = sources.map((source, index) => `
     <div class="mb-4 last:mb-0">
       <div class="mb-2 flex items-baseline justify-between gap-3">
-        <h3 class="text-[14px] font-semibold text-cw-text">${esc(source.cube)} / ${esc(source.view)}</h3>
+        <h3 class="text-[14px] font-semibold text-cw-text">${esc(source.cube)}</h3>
         <span class="shrink-0 rounded-full border border-[#9de3c5] bg-cw-greenBg px-2.5 py-0.5 text-[11px] font-semibold text-[#0d7a4c]">${Number(source.data_row_count || 0).toLocaleString()} rows</span>
       </div>
       <div class="mb-2 text-xs text-cw-muted">Preview: first ${(source.structured_preview?.rows || source.data_preview || []).length} rows</div>
@@ -852,11 +849,12 @@ function renderSingleMessage(data) {
     </div>
   `).join("");
 
-  return `<div class="flex justify-end">
-    <div class="max-w-[76%] rounded-2xl bg-white px-5 py-3 text-[15px] leading-7 text-cw-text shadow-soft">${esc(data.question)}</div>
-  </div>
+  return `<div class="mb-8 w-full">
+    <div class="flex justify-end mb-3">
+      <div class="max-w-[76%] rounded-2xl bg-white px-5 py-3 text-[15px] leading-7 text-cw-text shadow-soft">${esc(data.question)}</div>
+    </div>
 
-  <article class="max-w-[860px] text-cw-text">
+  <article class="w-full max-w-[860px] text-cw-text">
     <div class="mb-4 flex items-center gap-2 text-[12px] text-cw-muted">
       <span>Analyzed TM1 data and prepared a financial response.</span>
     </div>
@@ -878,7 +876,8 @@ function renderSingleMessage(data) {
     <section>
       <div class="text-[15px] leading-8 text-cw-sub [&_strong]:font-semibold [&_strong]:text-cw-text [&_em]:italic">${renderMarkdown(data.analysis)}</div>
     </section>
-  </article>`;
+  </article>
+  </div>`;
 }
 
 function renderConversation() {

@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    font-size: 14px;
+    color: #333;
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 24px;
+  }
+  h1 {
+    font-size: 20px;
+    color: #1a1a1a;
+    border-bottom: 2px solid #e5e7eb;
+    padding-bottom: 8px;
+    margin-bottom: 24px;
+  }
+  .turn {
+    margin-bottom: 32px;
+  }
+  .question {
+    background: #f0f9ff;
+    border-left: 3px solid #3b82f6;
+    padding: 10px 14px;
+    border-radius: 0 6px 6px 0;
+    margin-bottom: 12px;
+  }
+  .question .label {
+    font-size: 11px;
+    text-transform: uppercase;
+    color: #6b7280;
+    letter-spacing: 0.05em;
+  }
+  .question p {
+    margin: 4px 0 0;
+    font-weight: 500;
+    color: #1e3a5f;
+  }
+  .answer {
+    padding: 0 4px;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th {
+    background: #f3f4f6;
+    text-align: left;
+    padding: 8px 12px;
+    font-size: 12px;
+    text-transform: uppercase;
+    color: #6b7280;
+    border: 1px solid #e5e7eb;
+  }
+  td {
+    padding: 8px 12px;
+    border: 1px solid #e5e7eb;
+  }
+  tr:nth-child(even) td {
+    background: #f9fafb;
+  }
+  p {
+    line-height: 1.6;
+  }
+  .meta {
+    font-size: 12px;
+    color: #9ca3af;
+    border-top: 1px solid #e5e7eb;
+    padding-top: 12px;
+    margin-top: 32px;
+  }
+</style>
+</head>
+<body>
+  <h1>TM1 AI Analyst — $chosen_cube</h1>
+  $turns_html
+  <div class="meta">$data_row_count rows fetched &nbsp;·&nbsp; $chosen_cube</div>
+</body>
+</html>

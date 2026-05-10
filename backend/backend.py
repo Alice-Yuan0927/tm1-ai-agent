@@ -160,7 +160,7 @@ def analyze(req: QuestionRequest):
             schema = get_cube_schema(cube)
         except RuntimeError as exc:
             skipped_sources.append({
-                "cube": cube, "view": "", "reasoning": source_reasoning,
+                "cube": cube, "reasoning": source_reasoning,
                 "status": f"schema error: {exc}",
             })
             continue
@@ -171,7 +171,7 @@ def analyze(req: QuestionRequest):
             mdx = generate_cube_mdx(effective_question, schema, req.history, similar_queries=similar)
         except RuntimeError as exc:
             skipped_sources.append({
-                "cube": cube, "view": "", "reasoning": source_reasoning,
+                "cube": cube, "reasoning": source_reasoning,
                 "status": f"MDX generation error: {exc}",
             })
             continue
@@ -180,7 +180,7 @@ def analyze(req: QuestionRequest):
             rows, layout = execute_generated_mdx(cube, mdx)
         except RuntimeError as exc:
             skipped_sources.append({
-                "cube": cube, "view": "", "reasoning": source_reasoning,
+                "cube": cube, "reasoning": source_reasoning,
                 "status": f"error: {exc}",
                 "generated_mdx": mdx,
             })
@@ -188,7 +188,7 @@ def analyze(req: QuestionRequest):
 
         if not rows:
             skipped_sources.append({
-                "cube": cube, "view": "", "reasoning": source_reasoning,
+                "cube": cube, "reasoning": source_reasoning,
                 "status": "no data",
                 "generated_mdx": mdx,
             })
@@ -199,7 +199,6 @@ def analyze(req: QuestionRequest):
 
         sources.append({
             "cube": cube,
-            "view": "",
             "reasoning": source_reasoning,
             "data_row_count": len(rows),
             "data_preview": rows[:15],
@@ -210,7 +209,7 @@ def analyze(req: QuestionRequest):
 
     if not sources:
         skipped_text = "; ".join(
-            f"{item['cube']} / {item['view']} ({item['status']})"
+            f"{item['cube']} ({item['status']})"
             for item in skipped_sources
         )
         raise HTTPException(404, f"No selected TM1 cubes returned usable data. Tried: {skipped_text}")
@@ -231,7 +230,6 @@ def analyze(req: QuestionRequest):
         "type": "analysis",
         "question": question,
         "chosen_cube": first_source["cube"],
-        "chosen_view": first_source["view"],
         "reasoning": reasoning,
         "data_row_count": sum(source["data_row_count"] for source in sources),
         "data_preview": first_source["data_preview"],

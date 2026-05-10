@@ -10,8 +10,8 @@ class EmailRequest(BaseModel):
     to: str
     question: str
     chosen_cube: str
-    chosen_view: str
     reasoning: str
     data_row_count: int
     data_preview: list[dict] = Field(default_factory=list)
     analysis: str
+    history: list[dict] = Field(default_factory=list)  # full conversation [{question, analysis}, ...]
