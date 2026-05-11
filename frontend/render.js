@@ -79,7 +79,7 @@ async function downloadExcel(msgIdx, srcIdx) {
   } finally {
     if (btn) {
       btn.disabled = false;
-      btn.innerHTML = '<i class="fa-solid fa-file-excel text-[9px]"></i> Excel';
+      btn.innerHTML = '<i class="fa-solid fa-file-excel text-[9px]"></i> Download Excel';
     }
   }
 }
@@ -89,7 +89,7 @@ function _sourceCardsHtml(sources, reasoning, skippedSources) {
     <div class="rounded-lg border border-cw-border bg-white px-4 py-3">
       <div class="mb-2 flex items-center justify-between gap-2">
         <div class="${cls.label}">Source ${i + 1}</div>
-        <span class="shrink-0 rounded-full border border-[#9de3c5] bg-cw-greenBg px-2 py-0.5 text-[10px] font-semibold text-[#0d7a4c]">${Number(source.data_row_count || 0).toLocaleString()} rows</span>
+        <span class="shrink-0 rounded-full border border-blue-300 bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-600">${Number(source.data_row_count || 0).toLocaleString()} rows</span>
       </div>
       <div class="mb-1 font-mono text-[12.5px] font-medium text-cw-blue">${esc(source.cube)}</div>
       <div class="text-[12px] leading-5 text-cw-sub">${esc(source.reasoning || "")}</div>
@@ -111,8 +111,8 @@ function _tableSectionsHtml(sources, msgIdx) {
     const chartId = `chart-${Date.now()}-${index}`;
     const csvBtn = msgIdx != null
       ? `<button type="button" data-xlsx="${msgIdx}-${index}" onclick="downloadExcel(${msgIdx},${index})"
-           class="flex items-center gap-1 rounded-md border border-cw-border bg-white px-2 py-0.5 text-[11px] text-cw-muted transition hover:border-green-600 hover:text-green-600">
-           <i class="fa-solid fa-file-excel text-[9px]"></i> Excel
+           class="flex items-center gap-1 rounded-md border border-green-600 bg-white px-2 py-0.5 text-[11px] text-green-600 transition hover:bg-green-50">
+           <i class="fa-solid fa-file-excel text-[9px]"></i> Download Excel
          </button>`
       : "";
     return `
@@ -121,10 +121,14 @@ function _tableSectionsHtml(sources, msgIdx) {
         <h3 class="text-[14px] font-semibold text-cw-text">${esc(source.cube)}</h3>
         <div class="flex items-center gap-2">
           ${csvBtn}
-          <span class="shrink-0 rounded-full border border-[#9de3c5] bg-cw-greenBg px-2.5 py-0.5 text-[11px] font-semibold text-[#0d7a4c]">${Number(source.data_row_count || 0).toLocaleString()} rows</span>
+          <span class="shrink-0 rounded-full border border-blue-300 bg-blue-50 px-2.5 py-0.5 text-[11px] font-semibold text-blue-600">${Number(source.data_row_count || 0).toLocaleString()} rows</span>
         </div>
       </div>
-      <div class="mb-2 text-xs text-cw-muted">Preview: first ${(source.structured_preview?.rows || source.data_preview || []).length} rows</div>
+      <div class="mb-2 text-xs text-cw-muted">${(() => {
+        const p = source.structured_preview;
+        const n = p?.transpose ? (p?.columns?.length ?? 0) : (p?.rows ?? source.data_preview ?? []).length;
+        return `Preview: first ${n} rows`;
+      })()}</div>
       ${buildTm1Preview(source)}
       ${buildChart(source, chartId)}
     </div>`;

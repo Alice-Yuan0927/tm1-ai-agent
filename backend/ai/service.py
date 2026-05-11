@@ -4,7 +4,13 @@ from collections.abc import Iterator
 
 import anthropic
 
-from ..config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+from ..config import (
+    ANALYSIS_MAX_TOKENS,
+    ANTHROPIC_API_KEY,
+    CLAUDE_MODEL,
+    CUBE_SELECT_MAX_TOKENS,
+    MDX_MAX_TOKENS,
+)
 
 
 def _client() -> anthropic.Anthropic:
@@ -107,7 +113,7 @@ Hard rules:
     try:
         response = _client().messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=800,
+            max_tokens=MDX_MAX_TOKENS,
             messages=[{"role": "user", "content": prompt}],
         )
         mdx = response.content[0].text.strip()
@@ -148,7 +154,7 @@ Reply ONLY with valid JSON - no markdown, no extra text:
     try:
         response = _client().messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=300,
+            max_tokens=CUBE_SELECT_MAX_TOKENS,
             messages=[{"role": "user", "content": prompt}],
         )
         raw = re.sub(r"```json|```", "", response.content[0].text).strip()
@@ -304,6 +310,44 @@ def _parse_suggestions(text: str) -> tuple[str, list[str]]:
     return text.strip(), []
 
 
+def generate_homepage_suggestions(cubes: list[dict]) -> list[str]:
+    """Generate 3 suggested questions tailored to the connected TM1 model."""
+    cube_summary = json.dumps(
+        [{"cube": c.get("cube", ""), "description": c.get("description", "")} for c in cubes[:20]],
+        ensure_ascii=False,
+    )
+    prompt = f"""You are a financial analyst assistant connected to an IBM Planning Analytics (TM1) model.
+
+Available cubes:
+{cube_summary}
+
+Generate exactly 3 short, specific suggested questions a business user would ask about this data.
+Each question should reference concepts visible in the cube names or descriptions.
+Keep each question under 10 words — concise enough to fit in a button label.
+
+Reply with ONLY a JSON array of 3 strings, no markdown, no extra text:
+["<question 1>", "<question 2>", "<question 3>"]"""
+
+    try:
+        response = _client().messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=200,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = re.sub(r"```json|```", "", response.content[0].text).strip()
+        result = json.loads(raw)
+        if isinstance(result, list) and len(result) >= 3:
+            return [str(s) for s in result[:3]]
+    except Exception:
+        pass
+    # Fallback to generic questions if Claude fails
+    return [
+        "Show me a cost summary by department",
+        "What is the headcount movement this quarter?",
+        "Compare actuals vs budget by cost center",
+    ]
+
+
 def stream_financial_analysis(
     question: str,
     sources: list[dict],
@@ -315,7 +359,7 @@ def stream_financial_analysis(
     try:
         with _client().messages.stream(
             model=CLAUDE_MODEL,
-            max_tokens=1800,
+            max_tokens=ANALYSIS_MAX_TOKENS,
             messages=[{"role": "user", "content": prompt}],
         ) as stream:
             for text in stream.text_stream:

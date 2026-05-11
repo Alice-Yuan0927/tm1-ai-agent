@@ -2,7 +2,7 @@ import re
 
 from TM1py import TM1Service
 
-from ..config import MAX_DATA_ROWS, TM1_CONFIG
+from ..config import MAX_DATA_ROWS, TRANSPOSE_COLS, TM1_CONFIG
 
 
 def _member_name(unique_name: object) -> str:
@@ -98,9 +98,39 @@ def get_view_layout_from_mdx(mdx: str) -> dict[str, object]:
     }
 
 
-def build_structured_preview(rows: list[dict], layout: dict | None = None, limit: int = 30) -> dict:
+def _apply_aliases(value: str, alias_map: "dict[str, str] | None") -> str:
+    """Return the alias display name for an element, or the original value if none."""
+    if not alias_map:
+        return value
+    return alias_map.get(value, value)
+
+
+def build_structured_preview(
+    rows: list[dict],
+    layout: dict | None = None,
+    limit: int = 30,
+    dim_metadata: "dict[str, dict] | None" = None,
+    alias_maps: "dict[str, dict[str, str]] | None" = None,
+) -> dict:
+    """
+    dim_metadata: optional per-dimension info from the schema cache.
+    Shape: {dim_name: {"is_time_dim": bool, "consolidated": set[str]}}
+
+    alias_maps: optional element-name → display-name mapping per dimension.
+    Shape: {dim_name: {element_name: alias_value}}
+    When provided, row dimension values (e.g. employee IDs) are replaced with
+    their human-readable alias (e.g. "2" → "John Smith") in the output rows.
+    """
     if not rows:
-        return {"filters": [], "row_dimensions": [], "measure_dimension": "", "columns": [], "rows": []}
+        return {
+            "filters": [], "row_dimensions": [], "measure_dimension": "",
+            "columns": [], "rows": [],
+            "consolidated_columns": [], "column_dim_is_time": False,
+            "transpose": False,
+        }
+
+    dm = dim_metadata or {}
+    am = alias_maps or {}
 
     dimensions = list(rows[0].get("_dimensions", {}).keys())
     unique_by_dimension = {
@@ -108,8 +138,8 @@ def build_structured_preview(rows: list[dict], layout: dict | None = None, limit
         for dimension in dimensions
     }
     layout = layout or {}
-    mdx_row_dimensions = [dimension for dimension in layout.get("row_dimensions", []) if dimension in dimensions]
-    mdx_column_dimensions = [dimension for dimension in layout.get("column_dimensions", []) if dimension in dimensions]
+    mdx_row_dimensions = [d for d in layout.get("row_dimensions", []) if d in dimensions]
+    mdx_column_dimensions = [d for d in layout.get("column_dimensions", []) if d in dimensions]
 
     if mdx_column_dimensions:
         filter_dimensions = {item["dimension"] for item in layout.get("filters", [])}
@@ -127,12 +157,34 @@ def build_structured_preview(rows: list[dict], layout: dict | None = None, limit
         columns = []
         pivot = {}
         for row in rows:
-            row_key = tuple(row["_dimensions"].get(dimension, "") for dimension in row_dimensions)
-            target = pivot.setdefault(row_key, {dimension: row["_dimensions"].get(dimension, "") for dimension in row_dimensions})
-            column = " ".join(row["_dimensions"].get(dimension, "") for dimension in mdx_column_dimensions).strip() or "Value"
+            row_key = tuple(row["_dimensions"].get(d, "") for d in row_dimensions)
+            target = pivot.setdefault(
+                row_key,
+                {d: row["_dimensions"].get(d, "") for d in row_dimensions},
+            )
+            column = " ".join(
+                row["_dimensions"].get(d, "") for d in mdx_column_dimensions
+            ).strip() or "Value"
             if column not in columns:
                 columns.append(column)
             target[column] = row["value"]
+
+        # Collect all consolidated element names across column dimensions
+        cons_set: set[str] = set()
+        for d in mdx_column_dimensions:
+            cons_set |= dm.get(d, {}).get("consolidated", set())
+        consolidated_columns = [c for c in columns if c in cons_set]
+
+        col_dim_is_time = any(dm.get(d, {}).get("is_time_dim", False) for d in mdx_column_dimensions)
+
+        # Apply alias substitution to row-dimension values
+        aliased_rows = []
+        for prow in list(pivot.values())[:limit]:
+            aliased = dict(prow)
+            for d in row_dimensions:
+                if d in am and aliased.get(d) in am[d]:
+                    aliased[d] = am[d][aliased[d]]
+            aliased_rows.append(aliased)
 
         return {
             "filters": filters,
@@ -140,7 +192,10 @@ def build_structured_preview(rows: list[dict], layout: dict | None = None, limit
             "column_dimensions": mdx_column_dimensions,
             "measure_dimension": "Value",
             "columns": columns,
-            "rows": list(pivot.values())[:limit],
+            "rows": aliased_rows,
+            "consolidated_columns": consolidated_columns,
+            "column_dim_is_time": col_dim_is_time,
+            "transpose": not col_dim_is_time and len(columns) > TRANSPOSE_COLS,
         }
 
     measure_dimension = _guess_measure_dimension(rows)
@@ -151,29 +206,49 @@ def build_structured_preview(rows: list[dict], layout: dict | None = None, limit
         if dimension != measure_dimension and len(values) == 1
     ]
     row_dimensions = [
-        dimension for dimension in dimensions
-        if dimension != measure_dimension and len(unique_by_dimension.get(dimension, [])) > 1
+        d for d in dimensions
+        if d != measure_dimension and len(unique_by_dimension.get(d, [])) > 1
     ]
     if not row_dimensions:
         row_dimensions = [
-            dimension for dimension in dimensions
-            if dimension != measure_dimension and dimension not in {item["dimension"] for item in filters}
+            d for d in dimensions
+            if d != measure_dimension and d not in {item["dimension"] for item in filters}
         ]
 
     columns = unique_by_dimension.get(measure_dimension, []) if measure_dimension else ["Value"]
     pivot = {}
     for row in rows:
-        row_key = tuple(row["_dimensions"].get(dimension, "") for dimension in row_dimensions)
-        target = pivot.setdefault(row_key, {dimension: row["_dimensions"].get(dimension, "") for dimension in row_dimensions})
+        row_key = tuple(row["_dimensions"].get(d, "") for d in row_dimensions)
+        target = pivot.setdefault(
+            row_key,
+            {d: row["_dimensions"].get(d, "") for d in row_dimensions},
+        )
         column = row["_dimensions"].get(measure_dimension, "Value") if measure_dimension else "Value"
         target[column] = row["value"]
+
+    # Measure elements can also be consolidated (e.g. "Total Cost" = sum of sub-measures)
+    cons_set = dm.get(measure_dimension, {}).get("consolidated", set()) if measure_dimension else set()
+    consolidated_columns = [c for c in columns if c in cons_set]
+    col_dim_is_time = dm.get(measure_dimension, {}).get("is_time_dim", False) if measure_dimension else False
+
+    # Apply alias substitution to row-dimension values
+    aliased_rows = []
+    for prow in list(pivot.values())[:limit]:
+        aliased = dict(prow)
+        for d in row_dimensions:
+            if d in am and aliased.get(d) in am[d]:
+                aliased[d] = am[d][aliased[d]]
+        aliased_rows.append(aliased)
 
     return {
         "filters": filters,
         "row_dimensions": row_dimensions,
         "measure_dimension": measure_dimension or "Value",
         "columns": columns,
-        "rows": list(pivot.values())[:limit],
+        "rows": aliased_rows,
+        "consolidated_columns": consolidated_columns,
+        "column_dim_is_time": col_dim_is_time,
+        "transpose": not col_dim_is_time and len(columns) > TRANSPOSE_COLS,
     }
 
 

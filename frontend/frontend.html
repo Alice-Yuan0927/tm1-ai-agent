@@ -71,8 +71,17 @@
   </aside>
 
   <section class="relative flex min-w-0 flex-1 items-center justify-center px-6 pb-20 pt-8" id="mainContent">
-    <div class="fixed right-6 top-6 z-40" id="planningBadge">
-      <div class="inline-block rounded-full border border-cw-blueMid bg-cw-blueLite px-3 py-[3px] text-[11px] font-semibold uppercase tracking-[0.1em] text-cw-blue">IBM Planning Analytics</div>
+    <div class="fixed right-6 top-5 z-40" id="planningBadge">
+      <button type="button" onclick="syncSchema()"
+        class="inline-flex cursor-pointer items-center gap-2 rounded-full border border-cw-border bg-white px-3 py-1.5 shadow-sm transition-all duration-300 hover:border-cw-blue hover:shadow-md"
+        id="tm1Badge" title="Click to sync TM1 schema">
+        <span class="relative flex h-2 w-2 shrink-0">
+          <span id="tm1Ping" class="absolute inline-flex h-full w-full rounded-full opacity-0"></span>
+          <span id="tm1Dot" class="relative inline-flex h-2 w-2 rounded-full bg-gray-300"></span>
+        </span>
+        <span id="tm1InstanceName" class="max-w-[200px] truncate text-[11px] font-semibold text-cw-muted">Connecting…</span>
+        <span id="tm1SyncLabel" class="hidden text-[10px] text-cw-muted"></span>
+      </button>
     </div>
     <div class="fixed right-6 top-5 z-40 hidden" id="shareMenu">
       <button
@@ -107,7 +116,7 @@
     <div class="mx-auto w-full max-w-[760px] -translate-y-8" id="chatWrap">
       <section class="mb-8 text-center" id="heroIntro">
         <h1 class="mb-2 text-2xl font-bold leading-tight text-cw-text">Ask your financial data anything</h1>
-        <p class="whitespace-nowrap text-sm font-normal text-cw-sub">AI reads your TM1 cube views and returns instant financial analysis in plain language.</p>
+        <p class="whitespace-nowrap text-sm font-normal text-cw-sub">AI reads your TM1 cubes and returns instant financial analysis in plain language.</p>
       </section>
 
       <section class="mb-6 overflow-hidden rounded-[28px] border border-cw-border bg-white shadow-soft transition focus-within:border-cw-blue focus-within:ring-4 focus-within:ring-cw-blue/10" id="promptShell">
@@ -123,9 +132,7 @@
         <div class="flex flex-wrap items-center gap-2 px-4 pb-3 pt-1 sm:px-5" id="suggestedRow">
           <div class="flex flex-wrap items-center gap-2" id="suggestedContent">
             <span class="shrink-0 text-xs text-cw-muted">Suggested:</span>
-            <button type="button" class="pill" onclick="setQ('Show me labor cost summary by department')">Labor cost summary</button>
-            <button type="button" class="pill" onclick="setQ('What is the headcount movement this quarter?')">Headcount movement</button>
-            <button type="button" class="pill" onclick="setQ('Compare gross salary vs base pay by employee')">Salary breakdown</button>
+            <span class="text-xs text-cw-muted italic" id="suggestedLoading">Loading…</span>
           </div>
         </div>
       </section>

@@ -1,4 +1,4 @@
-from .cache import init_schema_db, is_empty, sync_schema
+from .cache import get_alias_maps, get_dim_metadata, get_last_synced_at, init_schema_db, is_empty, sync_schema
 from .service import (
     build_structured_preview,
     execute_generated_mdx,
@@ -7,6 +7,9 @@ from .service import (
 )
 
 __all__ = [
+    "get_alias_maps",
+    "get_dim_metadata",
+    "get_last_synced_at",
     "init_schema_db",
     "is_empty",
     "sync_schema",

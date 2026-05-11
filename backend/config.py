@@ -45,4 +45,30 @@ CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-4-5")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 RESEND_FROM = os.environ.get("RESEND_FROM", "").strip()
-MAX_DATA_ROWS = 150
+# ── Data size limits ──────────────────────────────────────────────────────────
+# Hard cap on raw TM1 cells fetched from a cellset. This limits everything
+# downstream: analysis_rows, full_preview, and Excel export. It is a safety
+# valve against accidental wide MDX queries (which can return millions of
+# cells and exhaust memory). 50 000 cells covers typical financial queries
+# (e.g. 500 employees × 12 months × ~8 measures) with room to spare.
+MAX_DATA_ROWS = 50_000
+
+# Columns beyond this count flip the table to transposed layout (measures as
+# rows, entities as columns). Time-series dimensions are never transposed.
+TRANSPOSE_COLS = env_int("TRANSPOSE_COLS", 30)
+
+# Max pivot rows forwarded to Claude for analysis. Keeps prompts well under
+# the 200K token limit even when MAX_DATA_ROWS is large. Raw TM1 cells contain
+# a _dimensions dict that duplicates every field, making them 5-10x larger
+# than the equivalent pivot row — so 300 pivoted rows ≈ safe budget.
+AI_MAX_ROWS = env_int("AI_MAX_ROWS", 300)
+
+# ── Claude token budgets ───────────────────────────────────────────────────────
+# MDX generation: needs enough room for a complete SELECT/FROM/WHERE statement.
+MDX_MAX_TOKENS = env_int("MDX_MAX_TOKENS", 800)
+
+# Cube selection: only returns a short JSON object with 2-3 cube names.
+CUBE_SELECT_MAX_TOKENS = env_int("CUBE_SELECT_MAX_TOKENS", 400)
+
+# Financial analysis: narrative text + SUGGESTIONS JSON array.
+ANALYSIS_MAX_TOKENS = env_int("ANALYSIS_MAX_TOKENS", 1800)
