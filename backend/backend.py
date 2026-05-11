@@ -7,8 +7,10 @@ Usage:
 """
 
 import json as _json
+import re
 import threading
 import time as _time
+from pathlib import Path
 from typing import Any, cast
 
 from fastapi import Body, FastAPI, HTTPException
@@ -17,27 +19,34 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from .ai import (
     _parse_suggestions,
+    detect_attribute_intent,
     find_clarifications,
     generate_cube_mdx,
     generate_homepage_suggestions,
+    generate_semantic_profile,
     init_db,
     is_unclear_question,
     retrieve_similar,
     save_query,
-    select_cubes,
+    select_cubes_with_profile,
     stream_financial_analysis,
 )
 from .config import AI_MAX_ROWS, CLAUDE_MODEL, FRONTEND_DIR, TM1_CONFIG
+from .config import public_tm1_config, update_tm1_config
 from .email_service import send_analysis_email
-from .schemas import EmailRequest, QuestionRequest
+from .schemas import EmailRequest, QuestionRequest, TM1ConfigRequest
 from .tm1 import (
     build_structured_preview,
     execute_generated_mdx,
+    get_alias_attribute_names,
     get_alias_maps,
+    get_current_period_defaults,
     get_cube_schema,
     get_cubes_with_descriptions,
     get_dim_metadata,
     get_last_synced_at,
+    get_named_attribute_map,
+    lookup_element_dim,
     init_schema_db,
     sync_schema,
 )
@@ -45,6 +54,7 @@ from .tm1 import is_empty as _schema_is_empty
 
 
 app = FastAPI(title="TM1 AI Analyst")
+_PROFILE_DIR = Path(__file__).parent / "model_profiles"
 
 # ── Suggested questions cache ─────────────────────────────────────────────────
 # Generated once by Claude on first request and held in memory.
@@ -110,7 +120,7 @@ def index():
 @app.get("/{asset_name}")
 def frontend_asset(asset_name: str):
     allowed_assets = {
-        "frontend.tailwind.js", "logo.svg",
+        "frontend.tailwind.js",
         "config.js", "markdown.js", "charts.js", "table.js",
         "store.js", "share.js", "ui.js", "sidebar.js",
         "render.js", "api.js", "main.js",
@@ -118,7 +128,34 @@ def frontend_asset(asset_name: str):
     if asset_name not in allowed_assets:
         raise HTTPException(404, "Not found")
     return FileResponse(
-        FRONTEND_DIR / asset_name,
+        FRONTEND_DIR / "js" / asset_name,
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
+@app.get("/js/{asset_name}")
+def frontend_js_asset(asset_name: str):
+    allowed_assets = {
+        "frontend.tailwind.js",
+        "config.js", "markdown.js", "charts.js", "table.js",
+        "store.js", "share.js", "ui.js", "sidebar.js",
+        "render.js", "api.js", "main.js",
+    }
+    if asset_name not in allowed_assets:
+        raise HTTPException(404, "Not found")
+    return FileResponse(
+        FRONTEND_DIR / "js" / asset_name,
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
+@app.get("/assets/{asset_name}")
+def frontend_image_asset(asset_name: str):
+    allowed_assets = {"logo.svg", "block.png", "block2.png", "blockchain.png"}
+    if asset_name not in allowed_assets:
+        raise HTTPException(404, "Not found")
+    return FileResponse(
+        FRONTEND_DIR / "assets" / asset_name,
         headers={"Cache-Control": "no-store, max-age=0"},
     )
 
@@ -161,6 +198,56 @@ def sync_schema_endpoint():
     _update_tm1_health("up")
     _suggestions_cache = None  # invalidate so next /api/suggestions regenerates
     return {"success": True, "last_synced_at": get_last_synced_at(), **summary}
+
+
+@app.get("/api/tm1-config")
+def get_tm1_config():
+    return public_tm1_config()
+
+
+@app.post("/api/tm1-config")
+def save_tm1_config(req: TM1ConfigRequest):
+    global _suggestions_cache, _tm1_health
+    try:
+        config = update_tm1_config(req.dict())
+        summary = sync_schema()
+    except Exception as exc:
+        _update_tm1_health("down")
+        raise HTTPException(500, f"TM1 configuration save failed: {exc}") from exc
+
+    _update_tm1_health("up")
+    _suggestions_cache = None
+    with _tm1_health_lock:
+        _tm1_health = {
+            "status": "up",
+            "name": f"{config.get('address')}:{config.get('port')}",
+            "ts": _time.monotonic(),
+        }
+    return {
+        "success": True,
+        "config": config,
+        "last_synced_at": get_last_synced_at(),
+        **summary,
+    }
+
+
+@app.post("/api/model-profile/generate")
+def generate_model_profile_endpoint():
+    try:
+        profile = generate_semantic_profile(_schema_summary_for_profile())
+        profile["default_filters"] = {
+            **dict(profile.get("default_filters") or {}),
+            **get_current_period_defaults(),
+        }
+        path = _save_current_model_profile(profile)
+    except Exception as exc:
+        raise HTTPException(500, f"Semantic profile generation failed: {exc}") from exc
+
+    return {
+        "success": True,
+        "profile": profile,
+        "profile_file": path.name,
+    }
 
 
 @app.get("/api/suggestions")
@@ -209,6 +296,151 @@ def _source_for_ai(s: dict) -> dict:
     }
 
 
+def _cube_context_for_selection(cubes: list[dict]) -> list[dict]:
+    """Add compact dimension/measure context so cube selection can honor breakdowns."""
+    enriched: list[dict] = []
+    for cube in cubes:
+        item = dict(cube)
+        try:
+            schema = get_cube_schema(str(cube.get("cube", "")))
+            dimensions = schema.get("dimensions", [])
+            item["dimensions"] = [
+                d.get("name", "")
+                for d in dimensions
+                if d.get("name") and not d.get("is_measure")
+            ]
+            item["dimension_elements"] = {
+                d.get("name", ""): list(d.get("elements", []))[:12]
+                for d in dimensions
+                if d.get("name") and not d.get("is_measure")
+            }
+            measure_dim = next((d for d in dimensions if d.get("is_measure")), None)
+            if measure_dim:
+                item["measure_dimension"] = measure_dim.get("name", "")
+                item["measures"] = list(measure_dim.get("elements", []))[:25]
+            attr_names = sorted({
+                a.get("name", "")
+                for d in dimensions
+                for a in d.get("attributes", [])
+                if a.get("name")
+            })
+            if attr_names:
+                item["attributes"] = attr_names[:25]
+        except Exception:
+            pass
+        enriched.append(item)
+    return enriched
+
+
+def _model_profile_id() -> str:
+    address = str(TM1_CONFIG.get("address", "tm1")).strip() or "tm1"
+    port = str(TM1_CONFIG.get("port", "")).strip()
+    raw = f"{address}_{port}" if port else address
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", raw).strip("_") or "default"
+
+
+def _model_profile_path() -> Path:
+    return _PROFILE_DIR / f"{_model_profile_id()}.json"
+
+
+def _load_current_model_profile() -> dict | None:
+    for path in (_model_profile_path(), _PROFILE_DIR / "default.json"):
+        if not path.exists():
+            continue
+        try:
+            return _json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+    return None
+
+
+def _save_current_model_profile(profile: dict) -> Path:
+    _PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    profile = {
+        **profile,
+        "model_id": _model_profile_id(),
+        "tm1_connection": {
+            "address": TM1_CONFIG.get("address", ""),
+            "port": TM1_CONFIG.get("port", ""),
+        },
+    }
+    path = _model_profile_path()
+    path.write_text(_json.dumps(profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def _schema_summary_for_profile() -> dict:
+    cubes = get_cubes_with_descriptions()
+    return {
+        "tm1_connection": {
+            "address": TM1_CONFIG.get("address", ""),
+            "port": TM1_CONFIG.get("port", ""),
+        },
+        "current_period_defaults": get_current_period_defaults(),
+        "cubes": _cube_context_for_selection(cubes),
+    }
+
+
+def _explicit_employee_ids(question: str) -> list[str]:
+    """Return explicit Employee element IDs referenced by number in the question."""
+    if not re.search(r"\bemployees?\b", question, flags=re.IGNORECASE):
+        return []
+
+    ids: list[str] = []
+    for match in re.finditer(
+        r"(?:\bno\.?\s*|#\s*|\bnumber\s+)(\d+)\b",
+        question,
+        flags=re.IGNORECASE,
+    ):
+        ids.append(match.group(1))
+
+    for match in re.finditer(
+        r"\bemployees?\s+(?:no\.?\s*|#\s*|number\s+)?(\d+)\b",
+        question,
+        flags=re.IGNORECASE,
+    ):
+        ids.append(match.group(1))
+
+    return list(dict.fromkeys(ids))
+
+
+def _schema_with_explicit_employee_ids(schema: dict, question: str) -> dict:
+    """
+    Add explicitly requested Employee IDs to the capped schema sample.
+
+    The full element list remains in SQLite; this only ensures the MDX prompt
+    sees specific Employee elements the user named, such as "employee no.2".
+    """
+    requested_ids = _explicit_employee_ids(question)
+    if not requested_ids:
+        return schema
+
+    dimensions = list(schema.get("dimensions", []))
+    employee_dim = next((d for d in dimensions if d.get("name") == "Employee"), None)
+    if not employee_dim:
+        return schema
+
+    existing = {str(e) for e in employee_dim.get("elements", [])}
+    verified = [
+        employee_id for employee_id in requested_ids
+        if employee_id not in existing
+        and lookup_element_dim(employee_id, candidate_dims=["Employee"]) == "Employee"
+    ]
+    if not verified:
+        return schema
+
+    patched_dims = []
+    for dimension in dimensions:
+        if dimension is employee_dim:
+            patched_dims.append({
+                **dimension,
+                "elements": [*dimension.get("elements", []), *verified],
+            })
+        else:
+            patched_dims.append(dimension)
+    return {**schema, "dimensions": patched_dims}
+
+
 def _analyze_sse_gen(req: QuestionRequest):
     """Sync SSE generator for /api/analyze. Yields `data: {...}\n\n` strings."""
 
@@ -238,6 +470,32 @@ def _analyze_sse_gen(req: QuestionRequest):
         }})
         return
 
+    # Pre-check: detect attribute display intent from follow-up questions.
+    # Runs before cube selection so the attribute column is applied regardless
+    # of which cube the AI selects.
+    forced_apply_attributes: dict[str, str] = {}
+    if req.history:
+        prev_cube = str(req.history[-1].get("chosen_cube", "")).strip()
+        if prev_cube:
+            try:
+                prev_schema = get_cube_schema(prev_cube)
+                dim_attrs: dict[str, list[str]] = {
+                    d["name"]: [
+                        a["name"] for a in d.get("attributes", [])
+                        if a.get("type") in ("Alias", "String")
+                    ]
+                    for d in prev_schema.get("dimensions", [])
+                    if not d.get("is_measure") and d.get("attributes")
+                }
+                if dim_attrs:
+                    intent = detect_attribute_intent(question, req.history, dim_attrs)
+                    if intent:
+                        forced_apply_attributes = {
+                            intent["dim_name"]: intent["attr_name"]
+                        }
+            except Exception:
+                pass
+
     # Step 1: select cubes
     yield evt({"type": "step", "step": 1})
     try:
@@ -252,12 +510,18 @@ def _analyze_sse_gen(req: QuestionRequest):
         effective_question = question
 
     try:
-        selection = select_cubes(effective_question, cubes, req.history)
+        selection = select_cubes_with_profile(
+            effective_question,
+            _cube_context_for_selection(cubes),
+            req.history,
+            model_profile=_load_current_model_profile(),
+        )
     except RuntimeError as exc:
         yield evt({"type": "error", "message": str(exc)}); return
 
     selected_cubes = selection.get("cubes") or []
     reasoning = selection.get("reasoning", "")
+    model_profile = _load_current_model_profile()
     if not selected_cubes:
         yield evt({"type": "error", "message": "AI did not return a valid cube selection"}); return
 
@@ -278,11 +542,18 @@ def _analyze_sse_gen(req: QuestionRequest):
             schema = get_cube_schema(cube)
         except RuntimeError as exc:
             skipped_sources.append({"cube": cube, "reasoning": source_reasoning, "status": f"schema error: {exc}"}); continue
+        schema = _schema_with_explicit_employee_ids(schema, effective_question)
 
         similar = retrieve_similar(effective_question, cube=cube)
 
         try:
-            mdx = generate_cube_mdx(effective_question, schema, req.history, similar_queries=similar)
+            mdx = generate_cube_mdx(
+                effective_question,
+                schema,
+                req.history,
+                similar_queries=similar,
+                model_profile=model_profile,
+            )
         except RuntimeError as exc:
             skipped_sources.append({"cube": cube, "reasoning": source_reasoning, "status": f"MDX error: {exc}"}); continue
 
@@ -311,11 +582,28 @@ def _analyze_sse_gen(req: QuestionRequest):
         except Exception:
             dm = {}
         try:
-            am = get_alias_maps(row_dims) if row_dims else {}
+            if forced_apply_attributes:
+                # Attribute intent detected: insert the requested attribute as a new column
+                am = {}
+                col_names: dict[str, str] = {}
+                for dim_name, attr_name in forced_apply_attributes.items():
+                    attr_map = get_named_attribute_map(dim_name, attr_name)
+                    if attr_map:
+                        am[dim_name] = attr_map
+                        col_names[dim_name] = attr_name
+            else:
+                # Default: add alias column if the dimension has one
+                am = get_alias_maps(row_dims) if row_dims else {}
+                attr_names = get_alias_attribute_names(list(am.keys())) if am else {}
+                col_names = {d: attr_names.get(d, f"{d} Name") for d in am}
         except Exception:
             am = {}
+            col_names = {}
 
-        full_preview = build_structured_preview(rows, layout, limit=len(rows), dim_metadata=dm, alias_maps=am)
+        full_preview = build_structured_preview(
+            rows, layout, limit=len(rows), dim_metadata=dm,
+            alias_maps=am, apply_attributes=col_names or None,
+        )
         # In normal mode: rows are the limiting axis (15 rows shown as table rows).
         # In transposed mode: columns become table rows — limit those too.
         _preview_rows = full_preview["rows"][:15]
@@ -325,10 +613,16 @@ def _analyze_sse_gen(req: QuestionRequest):
             else full_preview["columns"]
         )
         limited_preview = {**full_preview, "rows": _preview_rows, "columns": _preview_cols}
-        save_query(effective_question, cube, mdx, row_count=len(full_preview["rows"]))
+        # When transposed, columns become the displayed rows — report that count.
+        effective_row_count = (
+            len(full_preview["columns"])
+            if full_preview.get("transpose")
+            else len(full_preview["rows"])
+        )
+        save_query(effective_question, cube, mdx, row_count=effective_row_count)
         sources.append({
             "cube": cube, "reasoning": source_reasoning,
-            "data_row_count": len(full_preview["rows"]),
+            "data_row_count": effective_row_count,
             "data_preview": rows[:15],
             "structured_preview": limited_preview,
             "applied_filters": layout.get("applied_filters", []),

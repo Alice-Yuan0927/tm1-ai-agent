@@ -98,11 +98,36 @@ def get_view_layout_from_mdx(mdx: str) -> dict[str, object]:
     }
 
 
-def _apply_aliases(value: str, alias_map: "dict[str, str] | None") -> str:
-    """Return the alias display name for an element, or the original value if none."""
-    if not alias_map:
-        return value
-    return alias_map.get(value, value)
+def _build_display_rows(
+    pivot_rows: "list[dict]",
+    row_dimensions: "list[str]",
+    am: "dict[str, dict[str, str]]",
+    apply_attributes: "dict[str, str] | None",
+    limit: int,
+) -> "tuple[list[str], list[dict]]":
+    """
+    Return (augmented_row_dims, processed_rows).
+
+    For each row dimension that has entries in am, the original element ID is kept
+    and a new column is inserted immediately after it containing the attribute value.
+    The new column name comes from apply_attributes[dim_name] (e.g. "Employee Name").
+    """
+    aug_dims: list[str] = []
+    for d in row_dimensions:
+        aug_dims.append(d)
+        if d in am and apply_attributes and d in apply_attributes:
+            aug_dims.append(apply_attributes[d])
+
+    processed: list[dict] = []
+    for prow in list(pivot_rows)[:limit]:
+        row = dict(prow)
+        for d in row_dimensions:
+            if d in am and apply_attributes and d in apply_attributes:
+                attr_col = apply_attributes[d]
+                row[attr_col] = am[d].get(str(row.get(d, "")), "")
+        processed.append(row)
+
+    return aug_dims, processed
 
 
 def build_structured_preview(
@@ -111,15 +136,15 @@ def build_structured_preview(
     limit: int = 30,
     dim_metadata: "dict[str, dict] | None" = None,
     alias_maps: "dict[str, dict[str, str]] | None" = None,
+    apply_attributes: "dict[str, str] | None" = None,
 ) -> dict:
     """
-    dim_metadata: optional per-dimension info from the schema cache.
-    Shape: {dim_name: {"is_time_dim": bool, "consolidated": set[str]}}
-
-    alias_maps: optional element-name → display-name mapping per dimension.
-    Shape: {dim_name: {element_name: alias_value}}
-    When provided, row dimension values (e.g. employee IDs) are replaced with
-    their human-readable alias (e.g. "2" → "John Smith") in the output rows.
+    dim_metadata     : {dim_name: {"is_time_dim": bool, "consolidated": set[str]}}
+    alias_maps       : {dim_name: {element_name: attr_value}} — attribute values to display
+    apply_attributes : {dim_name: col_name} — column header for the new attribute column;
+                       must be provided alongside alias_maps for the column to appear.
+                       Original element IDs are always preserved; the attribute value is
+                       inserted as a new column immediately to the right of its dimension.
     """
     if not rows:
         return {
@@ -177,20 +202,15 @@ def build_structured_preview(
 
         col_dim_is_time = any(dm.get(d, {}).get("is_time_dim", False) for d in mdx_column_dimensions)
 
-        # Apply alias substitution to row-dimension values
-        aliased_rows = []
-        for prow in list(pivot.values())[:limit]:
-            aliased = dict(prow)
-            for d in row_dimensions:
-                if d in am and aliased.get(d) in am[d]:
-                    aliased[d] = am[d][aliased[d]]
-            aliased_rows.append(aliased)
+        display_row_dims, aliased_rows = _build_display_rows(
+            list(pivot.values()), row_dimensions, am, apply_attributes, limit
+        )
 
         return {
             "filters": filters,
-            "row_dimensions": row_dimensions,
+            "row_dimensions": display_row_dims,
             "column_dimensions": mdx_column_dimensions,
-            "measure_dimension": "Value",
+            "measure_dimension": " / ".join(mdx_column_dimensions) if mdx_column_dimensions else "Value",
             "columns": columns,
             "rows": aliased_rows,
             "consolidated_columns": consolidated_columns,
@@ -231,18 +251,13 @@ def build_structured_preview(
     consolidated_columns = [c for c in columns if c in cons_set]
     col_dim_is_time = dm.get(measure_dimension, {}).get("is_time_dim", False) if measure_dimension else False
 
-    # Apply alias substitution to row-dimension values
-    aliased_rows = []
-    for prow in list(pivot.values())[:limit]:
-        aliased = dict(prow)
-        for d in row_dimensions:
-            if d in am and aliased.get(d) in am[d]:
-                aliased[d] = am[d][aliased[d]]
-        aliased_rows.append(aliased)
+    display_row_dims, aliased_rows = _build_display_rows(
+        list(pivot.values()), row_dimensions, am, apply_attributes, limit
+    )
 
     return {
         "filters": filters,
-        "row_dimensions": row_dimensions,
+        "row_dimensions": display_row_dims,
         "measure_dimension": measure_dimension or "Value",
         "columns": columns,
         "rows": aliased_rows,

@@ -1,0 +1,152 @@
+{
+  "profile_version": 1,
+  "model_name": "default",
+  "source": "generated_from_schema_cache",
+  "business_terms": {
+    "time": ["Year", "Month", "Year Week", "Date"],
+    "scenario": ["Scenario", "Version"],
+    "currency": ["Currency From", "Currency To"],
+    "department": ["Cost Center"],
+    "business unit": ["Cost Center", "Store"],
+    "cost center": ["Cost Center"],
+    "store": ["Store"],
+    "product": ["Product"],
+    "employee": ["Employee"],
+    "staff": ["Employee", "Headcount"],
+    "worker": ["Employee", "Headcount"],
+    "headcount": ["Headcount", "Labor FTE Planning", "Labor Headcount Movement"],
+    "fte": ["FTE Pct", "FTE Plan", "Labor FTE Allocation", "Labor FTE Planning"],
+    "grade": ["Grade"],
+    "role": ["Grade", "Job Role", "Job Level"],
+    "seniority": ["Grade", "Job Level"],
+    "category": ["Employee Category"],
+    "movement": ["Movement Type", "Labor Headcount Movement"],
+    "account": ["Account", "Account Labor"],
+    "promotion": ["Promotion Event"],
+    "customer": ["Customer"]
+  },
+  "metric_mappings": {
+    "total labor cost": {
+      "preferred_cubes": ["Labor Summary", "Labor Base Pay", "Labor Headcount Movement"],
+      "preferred_measures": ["Amount", "Total Employment Cost", "Total Movement Cost"],
+      "preferred_dimensions": ["Cost Center", "Grade", "Employee Category", "Account Labor"]
+    },
+    "labor cost": {
+      "preferred_cubes": ["Labor Summary", "Labor Base Pay", "Labor Category Benefits"],
+      "preferred_measures": ["Amount", "Total Employment Cost"],
+      "preferred_dimensions": ["Cost Center", "Grade", "Employee Category", "Account Labor"]
+    },
+    "base pay": {
+      "preferred_cubes": ["Labor Base Pay"],
+      "preferred_measures": ["Total Employment Cost", "Effective Gross", "13th Month", "Bonus"],
+      "preferred_dimensions": ["Cost Center", "Grade", "Employee Category", "Employee"]
+    },
+    "salary": {
+      "preferred_cubes": ["Labor Gross Salary", "Labor Base Pay", "Labor Employee Details"],
+      "preferred_measures": ["Monthly Salary", "Monthly Income", "Effective Gross"],
+      "preferred_dimensions": ["Employee", "Grade", "Cost Center"]
+    },
+    "benefits": {
+      "preferred_cubes": ["Labor Base Pay", "Labor Category Benefits", "Labor Summary"],
+      "preferred_measures": ["Total Benefits", "Group Insurance", "Hospital Insurance", "Pension Contribution", "Meal Vouchers"],
+      "preferred_dimensions": ["Employee Category", "Cost Center", "Grade", "Employee"]
+    },
+    "headcount": {
+      "preferred_cubes": ["Labor FTE Planning", "Labor Headcount Movement"],
+      "preferred_measures": ["Headcount"],
+      "preferred_dimensions": ["Cost Center", "Grade", "Employee Category", "Movement Type"]
+    },
+    "fte": {
+      "preferred_cubes": ["Labor FTE Allocation", "Labor FTE Planning"],
+      "preferred_measures": ["FTE Pct", "FTE Plan", "Avg Cost Per FTE"],
+      "preferred_dimensions": ["Cost Center", "Grade", "Employee Category", "Employee"]
+    },
+    "turnover": {
+      "preferred_cubes": ["Labor Headcount Movement"],
+      "preferred_measures": ["Expected_Turnover_Rate_%", "Expected_Resignations", "Expected_Retirements"],
+      "preferred_dimensions": ["Cost Center", "Grade", "Employee Category", "Movement Type"]
+    },
+    "recruitment": {
+      "preferred_cubes": ["Labor Recruitment", "Labor Open Position Tracking"],
+      "preferred_measures": ["Agency Fee", "Onboarding_Cost", "Time to fill days", "Vacancy Cost"],
+      "preferred_dimensions": ["Cost Center", "Grade", "Line Item"]
+    },
+    "sales revenue": {
+      "preferred_cubes": ["Sales Revenue", "Sales Forecast", "P&L"],
+      "preferred_measures": ["Value"],
+      "preferred_dimensions": ["Store", "Product", "Promotion Event", "Account"]
+    },
+    "fx rate": {
+      "preferred_cubes": ["FX Rate"],
+      "preferred_measures": ["Rate", "Rate Final", "Rate Override"],
+      "preferred_dimensions": ["Currency From", "Currency To", "FX Rate Type"]
+    }
+  },
+  "cube_roles": {
+    "Labor Summary": {
+      "role": "labor cost summary by organization and labor account",
+      "best_for": ["total labor cost", "labor cost by cost center", "labor cost by grade", "labor cost by employee category", "labor account breakdown"],
+      "avoid_for": ["individual employee salary"]
+    },
+    "Labor Base Pay": {
+      "role": "employee-level base pay, benefits, and total employment cost",
+      "best_for": ["base pay", "benefits", "total employment cost", "employee cost detail"],
+      "avoid_for": ["high-level labor account summary when Labor Summary is available"]
+    },
+    "Labor Gross Salary": {
+      "role": "employee and grade monthly salary planning",
+      "best_for": ["monthly salary", "salary by employee", "salary by grade", "merit increase percent"],
+      "avoid_for": ["total labor cost", "benefits", "cost center breakdown"]
+    },
+    "Labor FTE Planning": {
+      "role": "planned headcount and average cost per FTE",
+      "best_for": ["headcount by cost center", "headcount by grade", "average cost per FTE"]
+    },
+    "Labor Headcount Movement": {
+      "role": "headcount movement, turnover, severance, retirement and resignation costs",
+      "best_for": ["headcount movement", "turnover", "resignation", "retirement", "movement cost"]
+    },
+    "Labor Employee Details": {
+      "role": "employee attributes and workforce demographics",
+      "best_for": ["employee details", "job role", "contract type", "job satisfaction", "performance rating"]
+    },
+    "FX Rate": {
+      "role": "exchange rate lookup and overrides",
+      "best_for": ["fx rate", "currency conversion rate"]
+    },
+    "P&L": {
+      "role": "profit and loss values by store and account",
+      "best_for": ["profit and loss", "P&L account analysis", "store financials"]
+    },
+    "Sales Revenue": {
+      "role": "sales revenue by store, product and promotion",
+      "best_for": ["sales revenue", "sales by product", "sales by store", "promotion revenue"]
+    }
+  },
+  "default_filters": {
+    "Scenario": {
+      "actual": "ACT",
+      "budget": "BUD",
+      "forecast": "FCST"
+    },
+    "Year": "2026",
+    "Month": "05",
+    "current_year": "2026",
+    "current_month": "05",
+    "current_day": "20",
+    "source": "tm1_sys_parameter"
+  },
+  "selection_guidance": [
+    "Prefer cubes whose dimensions or attributes can satisfy every explicit breakdown in the user question.",
+    "Use semantic matches from business_terms before falling back to cube names.",
+    "For broad cost questions, prefer summary/account cubes over narrow salary-only cubes.",
+    "For individual employee questions, prefer cubes with the Employee dimension.",
+    "If the requested business term has no plausible dimension, attribute, or metric mapping, ask a clarification rather than inventing a mapping."
+  ],
+  "chart_guidance": {
+    "percentage_terms": ["percent", "percentage", "pct", "share", "ratio", "rate"],
+    "split_percentage_measures": true,
+    "prefer_share_chart": "doughnut",
+    "prefer_absolute_chart": "bar"
+  }
+}

@@ -31,6 +31,7 @@ element_aliases dim_name, element_name, alias_value
 
 import re
 import sqlite3
+from datetime import date
 from pathlib import Path
 
 from TM1py import TM1Service
@@ -94,6 +95,97 @@ def _elem_type_value(raw) -> str:
     return "Numeric"
 
 
+def _normalise_month(value: object) -> str:
+    text = str(value or "").strip()
+    match = re.search(r"(\d{1,2})", text)
+    if not match:
+        return text
+    month = max(1, min(12, int(match.group(1))))
+    return f"{month:02d}"
+
+
+def _fallback_current_period() -> dict[str, str | bool]:
+    today = date.today()
+    return {
+        "Year": str(today.year),
+        "Month": f"{today.month:02d}",
+        "current_year": str(today.year),
+        "current_month": f"{today.month:02d}",
+        "current_day": str(today.day),
+        "source": "server_date",
+        "used_real_current_date": True,
+    }
+
+
+def get_current_period_defaults() -> dict[str, str | bool]:
+    """
+    Return current-period defaults from the TM1 Sys Parameter cube.
+
+    Falls back to the backend server date when the cube or cells are unavailable.
+    Expected TM1 parameters include:
+      - Current Actual Year
+      - Current Actual Month (e.g. M05)
+      - Current Actual Day in Month
+    """
+    fallback = _fallback_current_period()
+    try:
+        with TM1Service(**TM1_CONFIG) as tm1:
+            cube_name = "Sys Parameter"
+            dims = list(tm1.cubes.get_dimension_names(cube_name))
+            measure_dim = tm1.cubes.get_measure_dimension(cube_name)
+            param_dim = next((d for d in dims if d != measure_dim), "")
+            if not param_dim or not measure_dim:
+                return fallback
+
+            measure_elements = list(tm1.elements.get_element_names(measure_dim, measure_dim))
+            text_measure = next((m for m in measure_elements if m.lower() == "text"), None)
+            if not text_measure:
+                return fallback
+
+            params = [
+                "Current Actual Year",
+                "Current Actual Month",
+                "Current Actual Day in Month",
+                "Current Actual Week",
+                "Current Forecast Year",
+            ]
+            rows = ", ".join(f"[{param_dim}].[{param_dim}].[{p}]" for p in params)
+            mdx = (
+                f"SELECT {{[{measure_dim}].[{measure_dim}].[{text_measure}]}} ON COLUMNS, "
+                f"{{{rows}}} ON ROWS FROM [{cube_name}]"
+            )
+            cellset = tm1.cells.execute_mdx(mdx, skip_zeros=False)
+
+        values: dict[str, str] = {}
+        for coords, cell in cellset.items():
+            param = ""
+            for coord in coords:
+                text = str(coord)
+                if text.startswith(f"[{param_dim}]."):
+                    param = text.rsplit("[", 1)[-1][:-1]
+                    break
+            raw_value = cell.get("Value") if isinstance(cell, dict) else cell
+            if param and raw_value not in (None, ""):
+                values[param] = str(raw_value).strip()
+
+        year = values.get("Current Actual Year") or fallback["Year"]
+        month = _normalise_month(values.get("Current Actual Month") or fallback["Month"])
+        day = values.get("Current Actual Day in Month") or fallback["current_day"]
+        return {
+            "Year": str(year),
+            "Month": month,
+            "current_year": str(year),
+            "current_month": month,
+            "current_day": str(day),
+            "current_week": values.get("Current Actual Week", ""),
+            "forecast_year": values.get("Current Forecast Year", ""),
+            "source": "tm1_sys_parameter",
+            "used_real_current_date": False,
+        }
+    except Exception:
+        return fallback
+
+
 # ---------------------------------------------------------------------------
 # Initialisation
 # ---------------------------------------------------------------------------
@@ -140,6 +232,14 @@ def init_schema_db() -> None:
                 element_name TEXT NOT NULL,
                 alias_value  TEXT NOT NULL,
                 PRIMARY KEY (dim_name, element_name)
+            );
+
+            CREATE TABLE IF NOT EXISTS element_attribute_values (
+                dim_name     TEXT NOT NULL,
+                element_name TEXT NOT NULL,
+                attr_name    TEXT NOT NULL,
+                attr_value   TEXT NOT NULL,
+                PRIMARY KEY (dim_name, element_name, attr_name)
             );
         """)
         # Migration: add new columns to existing databases without resetting
@@ -229,29 +329,35 @@ def sync_schema() -> dict:
             except Exception:
                 dim_attrs[dim_name] = []
 
-        # Fetch alias attribute values for dimensions that have an Alias-type attribute.
-        # These are used to substitute numeric element IDs with human-readable names
-        # (e.g. employee "2" → "John Smith") in structured_preview and Excel output.
+        # Fetch all String + Alias attribute values for every dimension.
+        # Stored in element_attribute_values so the AI can apply any attribute
+        # by name (e.g. "Employee Name", "Grade", "Department") without
+        # needing a new TM1 query.
+        # element_aliases is also populated from the first Alias-type attribute
+        # for backward-compatibility with build_structured_preview defaults.
         dim_alias_values: dict[str, dict[str, str]] = {}
+        dim_all_attr_values: dict[str, dict[str, dict[str, str]]] = {}  # {dim: {attr: {elem: val}}}
         for dim_name in unique_dims:
-            alias_attr = next(
-                (name for name, atype in dim_attrs.get(dim_name, []) if atype == "Alias"),
-                None,
-            )
-            if not alias_attr:
-                continue
-            try:
-                raw = tm1.elements.get_attribute_of_elements(
-                    dim_name, dim_name, alias_attr
-                ) or {}
-                dim_alias_values[dim_name] = {
-                    k: str(v).strip() for k, v in raw.items() if v and str(v).strip()
-                }
-            except Exception:
-                pass
+            for attr_name, atype in dim_attrs.get(dim_name, []):
+                if atype not in ("Alias", "String"):
+                    continue
+                try:
+                    raw = tm1.elements.get_attribute_of_elements(
+                        dim_name, dim_name, attr_name
+                    ) or {}
+                    values = {k: str(v).strip() for k, v in raw.items() if v and str(v).strip()}
+                    if not values:
+                        continue
+                    dim_all_attr_values.setdefault(dim_name, {})[attr_name] = values
+                    # First Alias-type attribute → backward-compat element_aliases
+                    if atype == "Alias" and dim_name not in dim_alias_values:
+                        dim_alias_values[dim_name] = values
+                except Exception:
+                    pass
 
     # Write atomically to SQLite
     with _connect() as conn:
+        conn.execute("DELETE FROM element_attribute_values")
         conn.execute("DELETE FROM element_aliases")
         conn.execute("DELETE FROM dim_attributes")
         conn.execute("DELETE FROM elements")
@@ -305,11 +411,23 @@ def sync_schema() -> dict:
                 )
                 total_aliases += len(alias_map)
 
+        total_attr_vals = 0
+        for dim_name, attr_dict in dim_all_attr_values.items():
+            for attr_name, elem_vals in attr_dict.items():
+                if elem_vals:
+                    conn.executemany(
+                        "INSERT OR IGNORE INTO element_attribute_values"
+                        "(dim_name, element_name, attr_name, attr_value) VALUES (?, ?, ?, ?)",
+                        [(dim_name, elem, attr_name, val) for elem, val in elem_vals.items()],
+                    )
+                    total_attr_vals += len(elem_vals)
+
     return {
         "cubes": len(cube_dims),
         "dims": len(unique_dims),
         "elements": total_elems,
         "aliases": total_aliases,
+        "attribute_values": total_attr_vals,
     }
 
 
@@ -377,6 +495,11 @@ def get_cube_schema_cached(cube_name: str) -> dict | None:
                 "SELECT element_name FROM elements WHERE dim_name = ?"
                 " ORDER BY CASE WHEN LOWER(element_name) LIKE 'all%'"
                 "               OR LOWER(element_name) = 'total' THEN 0 ELSE 1 END,"
+                " CASE WHEN element_name GLOB '[0-9]*'"
+                "        AND element_name NOT GLOB '*[^0-9]*' THEN 0 ELSE 1 END,"
+                " CASE WHEN element_name GLOB '[0-9]*'"
+                "        AND element_name NOT GLOB '*[^0-9]*'"
+                "      THEN CAST(element_name AS INTEGER) END,"
                 " element_name LIMIT 60",
                 (dim_name,),
             ).fetchall()
@@ -425,6 +548,39 @@ def get_alias_maps(dim_names: list[str]) -> dict[str, dict[str, str]]:
     for dim_name, elem_name, alias_val in rows:
         result.setdefault(dim_name, {})[elem_name] = alias_val
     return result
+
+
+def get_alias_attribute_names(dim_names: list[str]) -> dict[str, str]:
+    """
+    Return {dim_name: attr_name} for the first Alias-type attribute in each dimension.
+    Used to derive the display column header when applying default alias substitution.
+    """
+    if not dim_names:
+        return {}
+    placeholders = ",".join("?" * len(dim_names))
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT dim_name, MIN(attribute_name) FROM dim_attributes"
+            f" WHERE dim_name IN ({placeholders}) AND attribute_type = 'Alias'"
+            f" GROUP BY dim_name",
+            dim_names,
+        ).fetchall()
+    return {r[0]: r[1] for r in rows if r[1]}
+
+
+def get_named_attribute_map(dim_name: str, attr_name: str) -> dict[str, str]:
+    """
+    Return {element_name: attr_value} for one specific dimension attribute.
+    Case-insensitive match on attr_name.
+    Used when the AI explicitly requests a particular attribute for display substitution.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT element_name, attr_value FROM element_attribute_values"
+            " WHERE dim_name = ? AND LOWER(attr_name) = LOWER(?)",
+            (dim_name, attr_name),
+        ).fetchall()
+    return {r[0]: r[1] for r in rows}
 
 
 def get_dim_metadata(dim_names: list[str]) -> dict[str, dict]:

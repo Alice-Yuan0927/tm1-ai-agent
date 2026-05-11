@@ -1,3 +1,4 @@
+import base64
 import re
 from pathlib import Path
 from string import Template
@@ -6,6 +7,7 @@ import markdown
 import requests
 
 from .config import RESEND_API_KEY, RESEND_FROM
+from .excel_service import build_excel
 from .schemas import EmailRequest
 
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -30,9 +32,13 @@ def send_analysis_email(req: EmailRequest) -> None:
     payload = {
         "from": RESEND_FROM,
         "to": [req.to],
-        "subject": f"TM1 AI Analyst — {req.chosen_cube}",
+        "subject": f"TM1 AI Analyst - {req.chosen_cube}",
         "html": _build_html_email(req),
     }
+    attachments = _build_excel_attachments(req)
+    if attachments:
+        payload["attachments"] = attachments
+
     headers = {
         "Authorization": f"Bearer {RESEND_API_KEY}",
         "Content-Type": "application/json",
@@ -50,6 +56,42 @@ def send_analysis_email(req: EmailRequest) -> None:
 
     if not response.ok:
         raise RuntimeError(f"Resend API error ({response.status_code}): {response.text}")
+
+
+def _safe_filename(name: str, used: set[str]) -> str:
+    stem = re.sub(r'[/\\?%*:|"<>]+', "-", name).strip(" .") or "tm1-export"
+    stem = stem[:80]
+    filename = f"{stem}.xlsx"
+    counter = 2
+    while filename.lower() in used:
+        filename = f"{stem}-{counter}.xlsx"
+        counter += 1
+    used.add(filename.lower())
+    return filename
+
+
+def _build_excel_attachments(req: EmailRequest) -> list[dict]:
+    attachments: list[dict] = []
+    used: set[str] = set()
+
+    for source in req.excel_sources:
+        cube = str(source.get("cube") or req.chosen_cube or "TM1 Export")
+        rows = list(source.get("analysis_rows") or source.get("data_preview") or [])
+        if not rows:
+            continue
+
+        xlsx = build_excel(
+            cube=cube,
+            question=str(source.get("question") or req.question or ""),
+            analysis_rows=rows,
+            structured_meta=dict(source.get("structured_preview") or {}),
+        )
+        attachments.append({
+            "filename": _safe_filename(cube, used),
+            "content": base64.b64encode(xlsx).decode("ascii"),
+        })
+
+    return attachments
 
 
 def _build_html_email(req: EmailRequest) -> str:

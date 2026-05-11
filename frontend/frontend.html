@@ -4,11 +4,12 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>TM1 AI Analyst &middot; Cubewise</title>
+<link rel="icon" href="assets/block2.png" type="image/png" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
 <script src="https://cdn.tailwindcss.com"></script>
-<script src="frontend.tailwind.js"></script>
+<script src="js/frontend.tailwind.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 </head>
 <body class="min-h-screen bg-cw-bg font-sans text-sm leading-relaxed text-cw-text antialiased">
@@ -16,7 +17,7 @@
   <aside class="sticky top-0 flex h-screen w-[260px] shrink-0 flex-col overflow-hidden bg-white transition-all duration-200" id="appSidebar">
     <div class="flex h-16 items-center justify-center gap-3 px-4" id="sidebarHeader">
       <button type="button" class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition hover:bg-cw-bg" id="sidebarToggle" aria-label="Toggle sidebar">
-        <img src="logo.svg" class="h-6 w-6 rounded-md" alt="Cubewise" />
+        <img src="assets/logo.svg" class="h-6 w-6 rounded-md" alt="Cubewise" />
       </button>
       <div class="sidebar-expanded min-w-0">
         <div class="truncate text-[15px] font-bold text-cw-text">cubewise</div>
@@ -71,10 +72,16 @@
   </aside>
 
   <section class="relative flex min-w-0 flex-1 items-center justify-center px-6 pb-20 pt-8" id="mainContent">
-    <div class="fixed right-6 top-5 z-40" id="planningBadge">
+    <div class="group fixed right-6 top-5 z-40 flex items-center gap-3" id="planningBadge">
+      <span id="tm1LastSync" class="text-[11px] text-gray-500 opacity-0 transition-opacity duration-200 group-hover:opacity-100"></span>
+      <button type="button" id="tm1SettingsBtn"
+        class="flex h-9 w-9 items-center justify-center rounded-lg border border-cw-border bg-white text-cw-muted shadow-sm transition hover:border-cw-blueMid hover:bg-cw-blueLite hover:text-cw-blue"
+        aria-label="TM1 settings" aria-expanded="false" aria-controls="tm1SettingsPopup">
+        <i class="fa-solid fa-gear text-[13px]"></i>
+      </button>
       <button type="button" onclick="syncSchema()"
         class="inline-flex cursor-pointer items-center gap-2 rounded-full border border-cw-border bg-white px-3 py-1.5 shadow-sm transition-all duration-300 hover:border-cw-blue hover:shadow-md"
-        id="tm1Badge" title="Click to sync TM1 schema">
+        id="tm1Badge">
         <span class="relative flex h-2 w-2 shrink-0">
           <span id="tm1Ping" class="absolute inline-flex h-full w-full rounded-full opacity-0"></span>
           <span id="tm1Dot" class="relative inline-flex h-2 w-2 rounded-full bg-gray-300"></span>
@@ -82,6 +89,69 @@
         <span id="tm1InstanceName" class="max-w-[200px] truncate text-[11px] font-semibold text-cw-muted">Connecting…</span>
         <span id="tm1SyncLabel" class="hidden text-[10px] text-cw-muted"></span>
       </button>
+      <div id="tm1SettingsPopup" class="absolute right-0 top-12 hidden w-[360px] rounded-xl border border-cw-border bg-white p-4 shadow-soft">
+        <div class="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <div class="text-[13px] font-semibold text-cw-text">TM1 model settings</div>
+            <div class="text-[11px] text-cw-muted">Save switches the active model and syncs schema.</div>
+          </div>
+          <button type="button" id="tm1SettingsClose" class="flex h-7 w-7 items-center justify-center rounded-md text-cw-muted transition hover:bg-cw-bg hover:text-cw-text" aria-label="Close TM1 settings">
+            <i class="fa-solid fa-xmark text-[12px]"></i>
+          </button>
+        </div>
+        <form id="tm1SettingsForm" class="space-y-3">
+          <div class="grid grid-cols-[1fr_88px] gap-2">
+            <label class="block">
+              <span class="mb-1 block text-[11px] font-medium text-cw-muted">Address</span>
+              <input id="tm1CfgAddress" class="h-9 w-full rounded-lg border border-cw-border px-3 text-[12px] outline-none focus:border-cw-blue focus:ring-4 focus:ring-cw-blue/10" autocomplete="off" />
+            </label>
+            <label class="block">
+              <span class="mb-1 block text-[11px] font-medium text-cw-muted">Port</span>
+              <input id="tm1CfgPort" type="number" class="h-9 w-full rounded-lg border border-cw-border px-3 text-[12px] outline-none focus:border-cw-blue focus:ring-4 focus:ring-cw-blue/10" />
+            </label>
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <label class="block">
+              <span class="mb-1 block text-[11px] font-medium text-cw-muted">User</span>
+              <input id="tm1CfgUser" class="h-9 w-full rounded-lg border border-cw-border px-3 text-[12px] outline-none focus:border-cw-blue focus:ring-4 focus:ring-cw-blue/10" autocomplete="username" />
+            </label>
+            <label class="block">
+              <span class="mb-1 block text-[11px] font-medium text-cw-muted">Password</span>
+              <div class="relative">
+                <input id="tm1CfgPassword" type="password" class="h-9 w-full rounded-lg border border-cw-border px-3 pr-9 text-[12px] outline-none focus:border-cw-blue focus:ring-4 focus:ring-cw-blue/10" autocomplete="current-password" />
+                <button type="button" id="tm1PasswordToggle" class="absolute right-2 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-cw-muted transition hover:bg-cw-bg hover:text-cw-blue" aria-label="Show password" aria-pressed="false">
+                  <i class="fa-regular fa-eye text-[12px]"></i>
+                </button>
+              </div>
+            </label>
+          </div>
+          <label class="block">
+            <span class="mb-1 block text-[11px] font-medium text-cw-muted">Namespace</span>
+            <input id="tm1CfgNamespace" class="h-9 w-full rounded-lg border border-cw-border px-3 text-[12px] outline-none focus:border-cw-blue focus:ring-4 focus:ring-cw-blue/10" placeholder="Optional" autocomplete="off" />
+          </label>
+          <div class="grid grid-cols-3 gap-2">
+            <label class="flex items-center gap-2 rounded-lg border border-cw-border px-2.5 py-2 text-[11px] text-cw-sub">
+              <input id="tm1CfgSsl" type="checkbox" class="h-4 w-4 rounded border-cw-border text-cw-blue focus:ring-cw-blue/20" />
+              <span>SSL</span>
+            </label>
+            <label class="flex items-center gap-2 rounded-lg border border-cw-border px-2.5 py-2 text-[11px] text-cw-sub">
+              <input id="tm1CfgVerify" type="checkbox" class="h-4 w-4 rounded border-cw-border text-cw-blue focus:ring-cw-blue/20" />
+              <span>Verify</span>
+            </label>
+            <label class="flex items-center gap-2 rounded-lg border border-cw-border px-2.5 py-2 text-[11px] text-cw-sub">
+              <input id="tm1CfgAsync" type="checkbox" class="h-4 w-4 rounded border-cw-border text-cw-blue focus:ring-cw-blue/20" />
+              <span>Async</span>
+            </label>
+          </div>
+          <div class="flex items-center justify-between gap-3 pt-1">
+            <div id="tm1SettingsStatus" class="min-h-4 text-[11px] font-medium text-cw-muted"></div>
+            <div class="flex shrink-0 items-center gap-2">
+              <button type="button" id="tm1ProfileGenerate" class="h-9 rounded-lg border border-cw-border bg-white px-3 text-[12px] font-semibold text-cw-text transition hover:border-cw-blueMid hover:bg-cw-blueLite disabled:cursor-not-allowed disabled:bg-cw-bg disabled:text-cw-muted">Generate profile</button>
+              <button type="submit" id="tm1SettingsSave" class="h-9 rounded-lg bg-cw-blue px-3 text-[12px] font-semibold text-white shadow-md shadow-cw-blue/25 transition hover:bg-cw-blueHover disabled:cursor-not-allowed disabled:bg-cw-border disabled:text-cw-muted disabled:shadow-none">Save & sync</button>
+            </div>
+          </div>
+        </form>
+      </div>
     </div>
     <div class="fixed right-6 top-5 z-40 hidden" id="shareMenu">
       <button
@@ -103,13 +173,19 @@
           <i class="fa-solid fa-link text-center text-cw-blue"></i>
           <span>Link</span>
         </button>
-        <div class="absolute right-full top-0 mr-3 hidden w-[320px] rounded-xl border border-cw-border bg-white p-3 shadow-soft" id="shareEmailForm">
-          <div class="mb-2 text-[12px] font-semibold text-cw-text">Send by email</div>
+        <div class="absolute right-full top-0 mr-3 hidden w-[400px] rounded-xl border border-cw-border bg-white p-3 shadow-soft" id="shareEmailForm">
+          <div class="mb-2 flex items-center justify-between gap-3">
+            <div class="text-[12px] font-semibold text-cw-text">Send by email</div>
+            <div class="min-h-4 text-right text-[11px] font-medium text-cw-muted" id="shareEmailStatus"></div>
+          </div>
           <div class="flex gap-2">
           <input id="shareEmailTo" type="email" class="h-10 min-w-0 flex-1 rounded-lg border border-cw-border bg-white px-3 text-[13px] text-cw-text outline-none transition placeholder:text-cw-placeholder focus:border-cw-blue focus:ring-4 focus:ring-cw-blue/10" placeholder="name@company.com" />
           <button type="button" id="shareEmailBtn" class="h-10 shrink-0 rounded-lg bg-cw-blue px-3 text-[12px] font-semibold text-white shadow-md shadow-cw-blue/30 transition hover:bg-cw-blueHover disabled:cursor-not-allowed disabled:bg-cw-border disabled:text-cw-muted disabled:shadow-none" onclick="sendCurrentEmail('share')">Send</button>
           </div>
-          <div class="mt-2 min-h-4 px-1 text-[11px] font-medium text-cw-muted" id="shareEmailStatus"></div>
+          <label class="mt-2 flex cursor-pointer items-center gap-2 rounded-lg px-1 py-1 text-[12px] text-cw-sub">
+            <input id="shareAttachExcel" type="checkbox" class="h-4 w-4 rounded border-cw-border text-cw-blue focus:ring-cw-blue/20" />
+            <span>Attach Excel files</span>
+          </label>
         </div>
       </div>
     </div>
@@ -144,16 +220,16 @@
   <div class="hidden w-12 w-[260px]"></div>
 </main>
 
-<script src="config.js"></script>
-<script src="markdown.js"></script>
-<script src="charts.js"></script>
-<script src="table.js"></script>
-<script src="store.js"></script>
-<script src="share.js"></script>
-<script src="ui.js"></script>
-<script src="sidebar.js"></script>
-<script src="render.js"></script>
-<script src="api.js"></script>
-<script src="main.js"></script>
+<script src="js/config.js"></script>
+<script src="js/markdown.js"></script>
+<script src="js/charts.js"></script>
+<script src="js/table.js"></script>
+<script src="js/store.js"></script>
+<script src="js/share.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/sidebar.js"></script>
+<script src="js/render.js"></script>
+<script src="js/api.js"></script>
+<script src="js/main.js"></script>
 </body>
 </html>

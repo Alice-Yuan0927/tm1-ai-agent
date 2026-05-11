@@ -15,3 +15,15 @@ class EmailRequest(BaseModel):
     data_preview: list[dict] = Field(default_factory=list)
     analysis: str
     history: list[dict] = Field(default_factory=list)  # full conversation [{question, analysis}, ...]
+    excel_sources: list[dict] = Field(default_factory=list)
+
+
+class TM1ConfigRequest(BaseModel):
+    address: str
+    port: int
+    user: str
+    password: str = ""
+    namespace: str = ""
+    ssl: bool = False
+    verify: bool = False
+    async_requests_mode: bool = False
