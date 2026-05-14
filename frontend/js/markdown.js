@@ -4,6 +4,13 @@ function renderInlineMarkdown(text) {
     .replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
 }
 
+function plainMarkdownText(text) {
+  return String(text ?? "")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/\*([^*\n]+)\*/g, "$1")
+    .trim();
+}
+
 function parseMarkdownTableRow(line) {
   const trimmed = line.trim();
   if (!trimmed.includes("|")) return null;
@@ -49,7 +56,7 @@ function _markdownDoughnutConfig(labels, col, palette) {
     data: {
       labels,
       datasets: [{
-        label: col.header,
+        label: plainMarkdownText(col.header),
         data: col.values.map(v => v ?? 0),
         backgroundColor: labels.map((_, i) => palette[i % palette.length]),
         borderWidth: 2,
@@ -58,13 +65,18 @@ function _markdownDoughnutConfig(labels, col, palette) {
     },
     options: {
       responsive: true, maintainAspectRatio: false, animation: false,
-      plugins: { legend: { position: "right", labels: { boxWidth: 10, font: { size: 11 }, padding: 8 } } },
+      plugins: {
+        legend: { position: "right", labels: { boxWidth: 10, font: { size: 11 }, padding: 8 } },
+        datalabels: typeof _doughnutDataLabelsConfig === "function"
+          ? _doughnutDataLabelsConfig(col.header)
+          : undefined,
+      },
     },
   };
 }
 
 function _buildMarkdownChart(header, body) {
-  const labels = body.map(row => String(row[0] ?? ""));
+  const labels = body.map(row => plainMarkdownText(row[0]));
   const palette = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16"];
 
   const numericCols = [];
@@ -86,7 +98,7 @@ function _buildMarkdownChart(header, body) {
       const datasets = valueCols.map((col, i) => {
         const color = palette[i % palette.length];
         return {
-          label: col.header,
+          label: plainMarkdownText(col.header),
           data: col.values.map(v => v ?? null),
           backgroundColor: color + "bb",
           borderWidth: 0,
@@ -97,7 +109,10 @@ function _buildMarkdownChart(header, body) {
         data: { labels, datasets },
         options: {
           responsive: true, maintainAspectRatio: false, animation: false,
-          plugins: { legend: { position: "bottom", labels: { boxWidth: 10, font: { size: 11 }, padding: 10 } } },
+          plugins: {
+            legend: { position: "bottom", labels: { boxWidth: 10, font: { size: 11 }, padding: 10 } },
+            datalabels: typeof _barDataLabelsConfig === "function" ? _barDataLabelsConfig() : undefined,
+          },
           scales: {
             x: { ticks: { font: { size: 10 }, maxRotation: labels.length > 6 ? 40 : 0 }, grid: { display: false } },
             y: { ticks: { font: { size: 10 }, maxTicksLimit: 5 }, grid: { color: "#f0f0f0" }, beginAtZero: true },
@@ -130,18 +145,23 @@ function _buildMarkdownChart(header, body) {
       type: "doughnut",
       data: {
         labels,
-        datasets: [{ data: numericCols[0].values.map(v => v ?? 0), backgroundColor: palette.slice(0, labels.length), borderWidth: 2, borderColor: "#fff" }],
+        datasets: [{ label: plainMarkdownText(numericCols[0].header), data: numericCols[0].values.map(v => v ?? 0), backgroundColor: palette.slice(0, labels.length), borderWidth: 2, borderColor: "#fff" }],
       },
       options: {
         responsive: true, maintainAspectRatio: false, animation: false,
-        plugins: { legend: { position: "right", labels: { boxWidth: 10, font: { size: 11 }, padding: 8 } } },
+        plugins: {
+          legend: { position: "right", labels: { boxWidth: 10, font: { size: 11 }, padding: 8 } },
+          datalabels: typeof _doughnutDataLabelsConfig === "function"
+            ? _doughnutDataLabelsConfig(numericCols[0].header)
+            : undefined,
+        },
       },
     };
   } else {
     const datasets = numericCols.map((col, i) => {
       const color = palette[i % palette.length];
       return {
-        label: col.header,
+        label: plainMarkdownText(col.header),
         data: col.values.map(v => v ?? null),
         spanGaps: true,
         borderColor: color,
@@ -156,7 +176,10 @@ function _buildMarkdownChart(header, body) {
       data: { labels, datasets },
       options: {
         responsive: true, maintainAspectRatio: false, animation: false,
-        plugins: { legend: { position: "bottom", labels: { boxWidth: 10, font: { size: 11 }, padding: 10 } } },
+        plugins: {
+          legend: { position: "bottom", labels: { boxWidth: 10, font: { size: 11 }, padding: 10 } },
+          datalabels: typeof _barDataLabelsConfig === "function" ? _barDataLabelsConfig() : undefined,
+        },
         scales: {
           x: { ticks: { font: { size: 10 }, maxRotation: 0 }, grid: { display: false } },
           y: { ticks: { font: { size: 10 }, maxTicksLimit: 5 }, grid: { color: "#f0f0f0" } },

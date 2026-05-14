@@ -1,4 +1,6 @@
 .env
+backend/runtime/
+.test_runtime_*/
 __pycache__/
 *.py[cod]
 .DS_Store

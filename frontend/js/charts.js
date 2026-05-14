@@ -1,4 +1,5 @@
 const _chartInstances = {};
+let _chartDataLabelsRegistered = false;
 
 // Regex fallback for when backend dim_metadata is not yet available
 // (e.g. old cached messages or pre-sync state)
@@ -29,8 +30,10 @@ function _makeChartConfig(isTime, labels, datasets) {
       responsive: true,
       maintainAspectRatio: false,
       animation: false,
+      layout: { padding: { top: 18 } },
       plugins: {
         legend: { position: "bottom", labels: { boxWidth: 10, font: { size: 11 }, padding: 10 } },
+        datalabels: _barDataLabelsConfig(),
       },
       scales: {
         x: {
@@ -49,8 +52,57 @@ function _makeChartConfig(isTime, labels, datasets) {
 
 function _numValue(value) {
   if (typeof value === "number") return value;
-  const parsed = parseFloat(String(value ?? "").replace(/[$€£¥,\s%]/g, ""));
+  const parsed = parseFloat(String(value ?? "").replace(/[$\u20ac\u00a3\u00a5,\s%]/g, ""));
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function _plainChartLabel(value) {
+  return String(value ?? "")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .trim();
+}
+
+function _formatChartValue(value, asPercent = false) {
+  const abs = Math.abs(value);
+  const formatted = abs >= 1000
+    ? value.toLocaleString(undefined, { maximumFractionDigits: 0 })
+    : value.toLocaleString(undefined, { maximumFractionDigits: abs < 10 && value % 1 ? 1 : 0 });
+  return asPercent ? `${formatted}%` : formatted;
+}
+
+function _barDataLabelsConfig() {
+  return {
+    anchor: "end",
+    align: "top",
+    offset: 2,
+    clamp: true,
+    clip: false,
+    color: "#334155",
+    font: { family: "Inter", size: 10, weight: "600" },
+    formatter: value => {
+      const number = Number(value);
+      return Number.isFinite(number) && number !== 0 ? _formatChartValue(number) : "";
+    },
+  };
+}
+
+function _doughnutDataLabelsConfig(label) {
+  const asPercent = /%|percent|percentage|pct|share|ratio|rate/i.test(String(label || ""));
+  return {
+    color: "#ffffff",
+    font: { family: "Inter", size: 11, weight: "700" },
+    formatter: (value, context) => {
+      const number = Number(value);
+      if (!Number.isFinite(number) || number === 0) return "";
+      const values = context.dataset.data || [];
+      const total = values.reduce((sum, item) => sum + Math.abs(Number(item) || 0), 0);
+      if (!total) return "";
+      const percent = Math.abs(number) / total * 100;
+      if (percent < 3) return "";
+      return _formatChartValue(number, asPercent);
+    },
+  };
 }
 
 function _isPercentColumn(col, rows) {
@@ -64,7 +116,7 @@ function _isPercentColumn(col, rows) {
 
 function _rowLabels(rows, rowDims) {
   return rows.map((row, i) =>
-    rowDims.map(d => row[d]).filter(Boolean).join(" / ") || `Row ${i + 1}`
+    rowDims.map(d => _plainChartLabel(row[d])).filter(Boolean).join(" / ") || `Row ${i + 1}`
   );
 }
 
@@ -74,7 +126,7 @@ function _makeMeasureBarConfig(labels, cols, rows, palette) {
     data: {
       labels,
       datasets: cols.map((col, i) => ({
-        label: col,
+        label: _plainChartLabel(col),
         data: rows.map(row => _numValue(row[col])),
         backgroundColor: palette[i % palette.length] + "cc",
         borderWidth: 0,
@@ -84,8 +136,10 @@ function _makeMeasureBarConfig(labels, cols, rows, palette) {
       responsive: true,
       maintainAspectRatio: false,
       animation: false,
+      layout: { padding: { top: 18 } },
       plugins: {
         legend: { position: "bottom", labels: { boxWidth: 10, font: { size: 11 }, padding: 10 } },
+        datalabels: _barDataLabelsConfig(),
       },
       scales: {
         x: { ticks: { font: { size: 10 }, maxRotation: labels.length > 6 ? 40 : 0 }, grid: { display: false } },
@@ -101,7 +155,7 @@ function _makeDoughnutConfig(labels, data, label, palette) {
     data: {
       labels,
       datasets: [{
-        label,
+        label: _plainChartLabel(label),
         data,
         backgroundColor: labels.map((_, i) => palette[i % palette.length] + "cc"),
         borderColor: "#fff",
@@ -114,6 +168,7 @@ function _makeDoughnutConfig(labels, data, label, palette) {
       animation: false,
       plugins: {
         legend: { position: "right", labels: { boxWidth: 10, font: { size: 11 }, padding: 8 } },
+        datalabels: _doughnutDataLabelsConfig(label),
       },
     },
   };
@@ -121,11 +176,11 @@ function _makeDoughnutConfig(labels, data, label, palette) {
 
 function _makeDatasets(isTime, cols, rows, rowDims, palette) {
   return rows.map((row, i) => {
-    const label = rowDims.map(d => row[d]).filter(Boolean).join(" / ") || `Row ${i + 1}`;
+    const label = rowDims.map(d => _plainChartLabel(row[d])).filter(Boolean).join(" / ") || `Row ${i + 1}`;
     const data = cols.map(col => _numValue(row[col]));
     const color = palette[i % palette.length];
     return {
-      label, data,
+      label: _plainChartLabel(label), data,
       borderColor: color,
       backgroundColor: isTime ? color + "18" : color + "cc",
       borderWidth: isTime ? 2 : 0,
@@ -165,8 +220,7 @@ function buildChart(source, chartId) {
     })
   );
   if (!hasNumeric) return "";
-
-  // ── Time-series: single line chart, no splitting needed ───────────────────
+  // Time-series: single line chart, no splitting needed
   if (isTime) {
     const datasets = _makeDatasets(true, columns, chartRows, rowDims, palette);
     const config = _makeChartConfig(true, columns, datasets);
@@ -198,7 +252,7 @@ function buildChart(source, chartId) {
         palette,
       );
       sections.push(`<div>
-        <p class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-cw-muted">${esc(col)}</p>
+        <p class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-cw-muted">${esc(_plainChartLabel(col))}</p>
         ${_canvasHtml(`${chartId}-pct-${i}`, config, 200)}
       </div>`);
     });
@@ -207,17 +261,15 @@ function buildChart(source, chartId) {
       return `<div class="mt-4 space-y-4">${sections.join("")}</div>`;
     }
   }
-
-  // ── Categorical: detect consolidated vs leaf elements ─────────────────────
+  // Categorical: detect consolidated vs leaf elements
   const consSet = new Set(preview.consolidated_columns || []);
   const _consName = /^(all\b|total$|totals$)/i;
   const isCons = c => consSet.has(c) || _consName.test(String(c).trim());
 
   const consCols = columns.filter(isCons);
   const leafCols = columns.filter(c => !isCons(c));
-
-  // Both consolidated and leaf present → dual-chart split
-  // Require ≥2 consolidated so a single-bar "Summary" chart isn't rendered alone
+  // Both consolidated and leaf present: dual-chart split.
+  // Require at least 2 consolidated columns so a single-bar summary is not rendered alone.
   if (consCols.length >= 2 && leafCols.length >= 2) {
     const summaryDatasets  = _makeDatasets(false, consCols, chartRows, rowDims, palette);
     const breakdownDatasets = _makeDatasets(false, leafCols, chartRows, rowDims, palette);
@@ -240,16 +292,14 @@ function buildChart(source, chartId) {
       </div>
     </div>`;
   }
-
-  // Only consolidated elements (no leaves) — show as-is
+  // Only consolidated elements (no leaves): show as-is
   if (leafCols.length < 2) {
     const datasets = _makeDatasets(false, columns, chartRows, rowDims, palette);
     const config = _makeChartConfig(false, columns, datasets);
     const height = columns.length > 6 ? 230 : 200;
     return `<div class="mt-4">${_canvasHtml(chartId, config, height)}</div>`;
   }
-
-  // Only leaf elements (no consolidated) — show as-is
+  // Only leaf elements (no consolidated): show as-is
   const datasets = _makeDatasets(false, leafCols, chartRows, rowDims, palette);
   const config = _makeChartConfig(false, leafCols, datasets);
   const height = leafCols.length > 6 ? 230 : 200;
@@ -260,11 +310,19 @@ function buildChart(source, chartId) {
 }
 
 function initCharts() {
+  if (window.ChartDataLabels && !_chartDataLabelsRegistered) {
+    Chart.register(ChartDataLabels);
+    _chartDataLabelsRegistered = true;
+  }
   document.querySelectorAll("canvas[data-config]").forEach(canvas => {
     const id = canvas.id;
     if (_chartInstances[id]) { _chartInstances[id].destroy(); }
     try {
       const config = JSON.parse(canvas.dataset.config);
+      config.options = config.options || {};
+      if (config.type !== "doughnut" && config.type !== "pie") {
+        config.options.layout = config.options.layout || { padding: { top: 18 } };
+      }
       _chartInstances[id] = new Chart(canvas, config);
     } catch { /* skip if Chart.js not loaded */ }
     canvas.removeAttribute("data-config");

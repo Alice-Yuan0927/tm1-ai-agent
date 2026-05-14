@@ -11,6 +11,7 @@
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="js/frontend.tailwind.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="js/vendor/chartjs-plugin-datalabels.min.js"></script>
 </head>
 <body class="min-h-screen bg-cw-bg font-sans text-sm leading-relaxed text-cw-text antialiased">
 <main class="flex min-h-screen">
@@ -79,8 +80,8 @@
         aria-label="TM1 settings" aria-expanded="false" aria-controls="tm1SettingsPopup">
         <i class="fa-solid fa-gear text-[13px]"></i>
       </button>
-      <button type="button" onclick="syncSchema()"
-        class="inline-flex cursor-pointer items-center gap-2 rounded-full border border-cw-border bg-white px-3 py-1.5 shadow-sm transition-all duration-300 hover:border-cw-blue hover:shadow-md"
+      <div
+        class="inline-flex cursor-default items-center gap-2 rounded-full border border-cw-border bg-white px-3 py-1.5 shadow-sm transition-all duration-300"
         id="tm1Badge">
         <span class="relative flex h-2 w-2 shrink-0">
           <span id="tm1Ping" class="absolute inline-flex h-full w-full rounded-full opacity-0"></span>
@@ -88,7 +89,7 @@
         </span>
         <span id="tm1InstanceName" class="max-w-[200px] truncate text-[11px] font-semibold text-cw-muted">Connecting…</span>
         <span id="tm1SyncLabel" class="hidden text-[10px] text-cw-muted"></span>
-      </button>
+      </div>
       <div id="tm1SettingsPopup" class="absolute right-0 top-12 hidden w-[360px] rounded-xl border border-cw-border bg-white p-4 shadow-soft">
         <div class="mb-3 flex items-center justify-between gap-3">
           <div>
@@ -100,6 +101,58 @@
           </button>
         </div>
         <form id="tm1SettingsForm" class="space-y-3">
+          <div class="grid grid-cols-[150px_1fr] gap-2">
+            <label class="block">
+              <span class="mb-1 block text-[11px] font-medium text-cw-muted">LLM provider</span>
+              <select id="llmCfgProvider" class="h-9 w-full rounded-lg border border-cw-border bg-white px-3 text-[12px] outline-none focus:border-cw-blue focus:ring-4 focus:ring-cw-blue/10"></select>
+            </label>
+            <label class="block">
+              <span class="mb-1 flex items-center justify-between gap-2 text-[11px] font-medium text-cw-muted">
+                <span>Model version</span>
+                <button type="button" id="llmRefreshModels"
+                  class="flex h-5 items-center gap-1 rounded text-[10px] text-cw-blue transition hover:text-cw-blueHover"
+                  title="Pull the latest model list from the provider API">
+                  <i class="fa-solid fa-arrows-rotate text-[10px]"></i>
+                  <span>Refresh</span>
+                </button>
+              </span>
+              <select id="llmCfgModel" class="h-9 w-full rounded-lg border border-cw-border bg-white px-3 text-[12px] outline-none focus:border-cw-blue focus:ring-4 focus:ring-cw-blue/10"></select>
+            </label>
+          </div>
+          <div class="rounded-lg border border-cw-borderLow bg-cw-bg/60">
+            <button type="button" id="llmAdvancedToggle" class="flex h-8 w-full items-center justify-between px-3 text-left text-[11px] font-semibold text-cw-muted transition hover:text-cw-text" aria-expanded="false" aria-controls="llmAdvancedConfig">
+              <span>LLM config</span>
+              <i id="llmAdvancedIcon" class="fa-solid fa-chevron-down text-[10px]"></i>
+            </button>
+            <div id="llmAdvancedConfig" class="hidden border-t border-cw-borderLow px-3 pb-3 pt-2">
+              <div class="grid grid-cols-2 gap-2">
+                <label class="block">
+                  <span class="mb-1 block text-[11px] font-medium text-cw-muted">Cube select temp</span>
+                  <input id="llmCfgCubeSelectTemp" type="number" min="0" max="2" step="0.1" class="h-9 w-full rounded-lg border border-cw-border bg-white px-3 text-[12px] outline-none focus:border-cw-blue focus:ring-4 focus:ring-cw-blue/10" />
+                </label>
+                <label class="block">
+                  <span class="mb-1 block text-[11px] font-medium text-cw-muted">MDX temp</span>
+                  <input id="llmCfgMdxTemp" type="number" min="0" max="2" step="0.1" class="h-9 w-full rounded-lg border border-cw-border bg-white px-3 text-[12px] outline-none focus:border-cw-blue focus:ring-4 focus:ring-cw-blue/10" />
+                </label>
+                <label class="block">
+                  <span class="mb-1 block text-[11px] font-medium text-cw-muted">Attribute temp</span>
+                  <input id="llmCfgAttributeTemp" type="number" min="0" max="2" step="0.1" class="h-9 w-full rounded-lg border border-cw-border bg-white px-3 text-[12px] outline-none focus:border-cw-blue focus:ring-4 focus:ring-cw-blue/10" />
+                </label>
+                <label class="block">
+                  <span class="mb-1 block text-[11px] font-medium text-cw-muted">Profile temp</span>
+                  <input id="llmCfgProfileTemp" type="number" min="0" max="2" step="0.1" class="h-9 w-full rounded-lg border border-cw-border bg-white px-3 text-[12px] outline-none focus:border-cw-blue focus:ring-4 focus:ring-cw-blue/10" />
+                </label>
+                <label class="block">
+                  <span class="mb-1 block text-[11px] font-medium text-cw-muted">Analysis temp</span>
+                  <input id="llmCfgAnalysisTemp" type="number" min="0" max="2" step="0.1" class="h-9 w-full rounded-lg border border-cw-border bg-white px-3 text-[12px] outline-none focus:border-cw-blue focus:ring-4 focus:ring-cw-blue/10" />
+                </label>
+                <label class="block">
+                  <span class="mb-1 block text-[11px] font-medium text-cw-muted">Suggestions temp</span>
+                  <input id="llmCfgSuggestionsTemp" type="number" min="0" max="2" step="0.1" class="h-9 w-full rounded-lg border border-cw-border bg-white px-3 text-[12px] outline-none focus:border-cw-blue focus:ring-4 focus:ring-cw-blue/10" />
+                </label>
+              </div>
+            </div>
+          </div>
           <div class="grid grid-cols-[1fr_88px] gap-2">
             <label class="block">
               <span class="mb-1 block text-[11px] font-medium text-cw-muted">Address</span>
@@ -143,9 +196,9 @@
               <span>Async</span>
             </label>
           </div>
-          <div class="flex items-center justify-between gap-3 pt-1">
-            <div id="tm1SettingsStatus" class="min-h-4 text-[11px] font-medium text-cw-muted"></div>
-            <div class="flex shrink-0 items-center gap-2">
+          <div class="space-y-2 pt-1">
+            <div id="tm1SettingsStatus" class="min-h-4 max-w-full break-words text-[11px] font-medium leading-4 text-cw-muted"></div>
+            <div class="flex min-w-0 items-center justify-end gap-2">
               <button type="button" id="tm1ProfileGenerate" class="h-9 rounded-lg border border-cw-border bg-white px-3 text-[12px] font-semibold text-cw-text transition hover:border-cw-blueMid hover:bg-cw-blueLite disabled:cursor-not-allowed disabled:bg-cw-bg disabled:text-cw-muted">Generate profile</button>
               <button type="submit" id="tm1SettingsSave" class="h-9 rounded-lg bg-cw-blue px-3 text-[12px] font-semibold text-white shadow-md shadow-cw-blue/25 transition hover:bg-cw-blueHover disabled:cursor-not-allowed disabled:bg-cw-border disabled:text-cw-muted disabled:shadow-none">Save & sync</button>
             </div>
@@ -206,10 +259,23 @@
           ></textarea>
         </div>
         <div class="flex flex-wrap items-center gap-2 px-4 pb-3 pt-1 sm:px-5" id="suggestedRow">
+          <button type="button" id="cubeScopeBtn"
+            class="relative flex h-7 items-center gap-1.5 rounded-full border border-cw-border bg-white px-2.5 text-[11px] font-medium text-cw-sub transition hover:border-cw-blueMid hover:bg-cw-blueLite hover:text-cw-blue"
+            aria-label="Restrict cube scope" aria-expanded="false" aria-controls="cubeScopePopup">
+            <i class="fa-solid fa-cubes text-[12px]"></i>
+            <span id="cubeScopeLabel">Cubes</span>
+            <span id="cubeScopeBadge" class="hidden h-4 min-w-[16px] items-center justify-center rounded-full bg-cw-blue px-1 text-[10px] font-semibold text-white">0</span>
+          </button>
           <div class="flex flex-wrap items-center gap-2" id="suggestedContent">
             <span class="shrink-0 text-xs text-cw-muted">Suggested:</span>
             <span class="text-xs text-cw-muted italic" id="suggestedLoading">Loading…</span>
           </div>
+          <button type="button" id="stopBtn"
+            class="ml-auto hidden h-7 items-center gap-1.5 rounded-full border border-red-200 bg-red-50 px-2.5 text-[11px] font-semibold text-red-600 transition hover:border-red-300 hover:bg-red-100"
+            aria-label="Stop the in-flight request">
+            <i class="fa-solid fa-stop text-[10px]"></i>
+            <span>Stop</span>
+          </button>
         </div>
       </section>
 
@@ -220,6 +286,34 @@
   <div class="hidden w-12 w-[260px]"></div>
 </main>
 
+<div id="cubeScopePopup"
+  class="fixed z-50 hidden w-[360px] flex-col overflow-hidden rounded-xl border border-cw-border bg-white shadow-soft"
+  style="top: 0; left: 0;">
+  <div class="flex items-center justify-between border-b border-cw-borderLow px-3 py-2">
+    <div>
+      <div class="text-[12px] font-semibold text-cw-text">Restrict to specific cubes</div>
+      <div class="text-[10px] text-cw-muted">Only checked cubes are queried.</div>
+    </div>
+    <button type="button" id="cubeScopeClose" class="flex h-6 w-6 items-center justify-center rounded-md text-cw-muted transition hover:bg-cw-bg hover:text-cw-text" aria-label="Close cube picker">
+      <i class="fa-solid fa-xmark text-[11px]"></i>
+    </button>
+  </div>
+  <div class="px-3 py-2">
+    <label class="relative block">
+      <i class="fa-solid fa-magnifying-glass absolute left-2.5 top-1/2 -translate-y-1/2 text-[11px] text-cw-muted"></i>
+      <input id="cubeScopeSearch" type="search" placeholder="Search cubes"
+        class="h-8 w-full rounded-lg border border-cw-border bg-white pl-7 pr-2 text-[12px] outline-none focus:border-cw-blue focus:ring-2 focus:ring-cw-blue/10" />
+    </label>
+  </div>
+  <div id="cubeScopeList" class="max-h-[320px] min-h-[120px] overflow-y-auto px-2 pb-2">
+    <div class="px-2 py-3 text-[11px] italic text-cw-muted" id="cubeScopeLoading">Loading cubes…</div>
+  </div>
+  <div class="flex items-center justify-between border-t border-cw-borderLow px-3 py-2 text-[11px]">
+    <button type="button" id="cubeScopeClear" class="font-medium text-cw-muted transition hover:text-cw-text">Clear all</button>
+    <span id="cubeScopeCount" class="text-cw-muted">0 selected</span>
+  </div>
+</div>
+
 <script src="js/config.js"></script>
 <script src="js/markdown.js"></script>
 <script src="js/charts.js"></script>
@@ -228,6 +322,7 @@
 <script src="js/share.js"></script>
 <script src="js/ui.js"></script>
 <script src="js/sidebar.js"></script>
+<script src="js/cubes.js"></script>
 <script src="js/render.js"></script>
 <script src="js/api.js"></script>
 <script src="js/main.js"></script>

@@ -1,12 +1,44 @@
+import json
 import os
 from pathlib import Path
 
 
 BASE_DIR = Path(__file__).resolve().parent
 ENV_PATH = BASE_DIR.parent / ".env"
+RUNTIME_DIR = BASE_DIR / "runtime"
+TM1_CONFIG_PATH = RUNTIME_DIR / "tm1_config.json"
+LLM_CONFIG_PATH = RUNTIME_DIR / "llm_config.json"
+LLM_MODELS_PATH = RUNTIME_DIR / "llm_models.json"
 FRONTEND_DIR = BASE_DIR / "frontend"
 if not FRONTEND_DIR.exists():
     FRONTEND_DIR = BASE_DIR.parent / "frontend"
+
+DEFAULT_LLM_TEMPERATURES = {
+    "cube_select_temperature": 0.0,
+    "mdx_temperature": 0.0,
+    "attribute_intent_temperature": 0.0,
+    "semantic_profile_temperature": 0.2,
+    "analysis_temperature": 0.2,
+    "suggestions_temperature": 0.4,
+}
+
+
+def _load_env_file() -> None:
+    """Load repo .env values for local runs without overriding real env vars."""
+    if not ENV_PATH.exists():
+        return
+    for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
+        raw = line.strip()
+        if not raw or raw.startswith("#") or "=" not in raw:
+            continue
+        key, value = raw.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+_load_env_file()
 
 
 def env_bool(name: str, default: bool) -> bool:
@@ -36,21 +68,60 @@ def env_float(name: str, default: float) -> float:
         raise RuntimeError(f"{name} must be a number") from exc
 
 
-TM1_CONFIG = {
-    "address": os.environ.get("TM1_ADDRESS", "localhost"),
-    "port": env_int("TM1_PORT", 9510),
-    "user": os.environ.get("TM1_USER", "admin"),
-    "password": os.environ.get("TM1_PASSWORD", ""),
-    "ssl": env_bool("TM1_SSL", False),
-    "async_requests_mode": env_bool("TM1_ASYNC_REQUESTS_MODE", False),
-    "verify": env_bool("TM1_VERIFY", False),
-}
+def _default_tm1_config_from_env() -> dict:
+    config = {
+        "address": os.environ.get("TM1_ADDRESS", "localhost"),
+        "port": env_int("TM1_PORT", 9510),
+        "user": os.environ.get("TM1_USER", "admin"),
+        "password": os.environ.get("TM1_PASSWORD", ""),
+        "ssl": env_bool("TM1_SSL", False),
+        "async_requests_mode": env_bool("TM1_ASYNC_REQUESTS_MODE", False),
+        "verify": env_bool("TM1_VERIFY", False),
+    }
+    namespace = os.environ.get("TM1_NAMESPACE", "").strip()
+    if namespace.lower() in {"none", "null", "false"}:
+        namespace = ""
+    if namespace:
+        config["namespace"] = namespace
+    return config
 
-tm1_namespace = os.environ.get("TM1_NAMESPACE", "").strip()
-if tm1_namespace.lower() in {"none", "null", "false"}:
-    tm1_namespace = ""
-if tm1_namespace:
-    TM1_CONFIG["namespace"] = tm1_namespace
+
+def _load_tm1_config() -> dict:
+    if TM1_CONFIG_PATH.exists():
+        try:
+            return build_tm1_config(json.loads(TM1_CONFIG_PATH.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+    return _default_tm1_config_from_env()
+
+
+TM1_CONFIG = _load_tm1_config()
+
+
+def _default_llm_config_from_env() -> dict:
+    config = {
+        "provider": os.environ.get("LLM_PROVIDER", "openai"),
+        "model": os.environ.get("LLM_MODEL", ""),
+    }
+    config.update({
+        "cube_select_temperature": env_float("CUBE_SELECT_TEMPERATURE", DEFAULT_LLM_TEMPERATURES["cube_select_temperature"]),
+        "mdx_temperature": env_float("MDX_TEMPERATURE", DEFAULT_LLM_TEMPERATURES["mdx_temperature"]),
+        "attribute_intent_temperature": env_float("ATTRIBUTE_INTENT_TEMPERATURE", DEFAULT_LLM_TEMPERATURES["attribute_intent_temperature"]),
+        "semantic_profile_temperature": env_float("SEMANTIC_PROFILE_TEMPERATURE", DEFAULT_LLM_TEMPERATURES["semantic_profile_temperature"]),
+        "analysis_temperature": env_float("ANALYSIS_TEMPERATURE", DEFAULT_LLM_TEMPERATURES["analysis_temperature"]),
+        "suggestions_temperature": env_float("SUGGESTIONS_TEMPERATURE", DEFAULT_LLM_TEMPERATURES["suggestions_temperature"]),
+    })
+    return config
+
+
+def _load_llm_config() -> dict:
+    if LLM_CONFIG_PATH.exists():
+        try:
+            loaded = json.loads(LLM_CONFIG_PATH.read_text(encoding="utf-8"))
+            return build_llm_config(loaded)
+        except Exception:
+            pass
+    return _default_llm_config_from_env()
 
 
 def build_tm1_config(values: dict[str, object]) -> dict:
@@ -69,8 +140,32 @@ def build_tm1_config(values: dict[str, object]) -> dict:
     return config
 
 
+def build_llm_config(values: dict[str, object]) -> dict:
+    config = {
+        "provider": str(values.get("provider", "openai")).strip().lower() or "openai",
+        "model": str(values.get("model", "")).strip(),
+    }
+    for key, default in DEFAULT_LLM_TEMPERATURES.items():
+        try:
+            config[key] = float(values.get(key, default))
+        except (TypeError, ValueError):
+            config[key] = default
+    return config
+
+
+LLM_CONFIG = _load_llm_config()
+
+
 def public_tm1_config() -> dict:
     return {
+        "llm_provider": LLM_CONFIG.get("provider", "openai"),
+        "llm_model": LLM_CONFIG.get("model", ""),
+        "cube_select_temperature": get_llm_temperature("cube_select_temperature"),
+        "mdx_temperature": get_llm_temperature("mdx_temperature"),
+        "attribute_intent_temperature": get_llm_temperature("attribute_intent_temperature"),
+        "semantic_profile_temperature": get_llm_temperature("semantic_profile_temperature"),
+        "analysis_temperature": get_llm_temperature("analysis_temperature"),
+        "suggestions_temperature": get_llm_temperature("suggestions_temperature"),
         "address": TM1_CONFIG.get("address", ""),
         "port": TM1_CONFIG.get("port", 9510),
         "user": TM1_CONFIG.get("user", ""),
@@ -83,46 +178,66 @@ def public_tm1_config() -> dict:
 
 
 def update_tm1_config(values: dict[str, object]) -> dict:
+    llm_config = build_llm_config({
+        "provider": values.get("llm_provider", "openai"),
+        "model": values.get("llm_model", ""),
+        "cube_select_temperature": values.get("cube_select_temperature", DEFAULT_LLM_TEMPERATURES["cube_select_temperature"]),
+        "mdx_temperature": values.get("mdx_temperature", DEFAULT_LLM_TEMPERATURES["mdx_temperature"]),
+        "attribute_intent_temperature": values.get("attribute_intent_temperature", DEFAULT_LLM_TEMPERATURES["attribute_intent_temperature"]),
+        "semantic_profile_temperature": values.get("semantic_profile_temperature", DEFAULT_LLM_TEMPERATURES["semantic_profile_temperature"]),
+        "analysis_temperature": values.get("analysis_temperature", DEFAULT_LLM_TEMPERATURES["analysis_temperature"]),
+        "suggestions_temperature": values.get("suggestions_temperature", DEFAULT_LLM_TEMPERATURES["suggestions_temperature"]),
+    })
     config = build_tm1_config(values)
+    LLM_CONFIG.clear()
+    LLM_CONFIG.update(llm_config)
     TM1_CONFIG.clear()
     TM1_CONFIG.update(config)
-    _write_env_tm1_config(config)
+    _write_tm1_config(config)
+    _write_llm_config(llm_config)
     return public_tm1_config()
 
 
-def _write_env_tm1_config(config: dict) -> None:
-    replacements = {
-        "TM1_ADDRESS": str(config.get("address", "")),
-        "TM1_PORT": str(config.get("port", "")),
-        "TM1_USER": str(config.get("user", "")),
-        "TM1_PASSWORD": str(config.get("password", "")),
-        "TM1_NAMESPACE": str(config.get("namespace", "")),
-        "TM1_SSL": str(bool(config.get("ssl", False))).lower(),
-        "TM1_VERIFY": str(bool(config.get("verify", False))).lower(),
-        "TM1_ASYNC_REQUESTS_MODE": str(bool(config.get("async_requests_mode", False))).lower(),
-    }
-    lines = ENV_PATH.read_text(encoding="utf-8").splitlines() if ENV_PATH.exists() else []
-    seen: set[str] = set()
-    next_lines: list[str] = []
+def _write_tm1_config(config: dict) -> None:
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    TM1_CONFIG_PATH.write_text(
+        json.dumps(build_tm1_config(config), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
-    for line in lines:
-        key = line.split("=", 1)[0].strip() if "=" in line else ""
-        if key in replacements:
-            next_lines.append(f"{key}={replacements[key]}")
-            seen.add(key)
-        else:
-            next_lines.append(line)
 
-    if next_lines and next_lines[-1].strip():
-        next_lines.append("")
-    for key, value in replacements.items():
-        if key not in seen:
-            next_lines.append(f"{key}={value}")
+def _write_llm_config(config: dict) -> None:
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    LLM_CONFIG_PATH.write_text(
+        json.dumps(build_llm_config(config), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
-    ENV_PATH.write_text("\n".join(next_lines).rstrip() + "\n", encoding="utf-8")
 
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-4-5")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+def get_llm_model() -> str:
+    return str(LLM_CONFIG.get("model") or os.environ.get("LLM_MODEL") or "").strip()
+
+
+def get_llm_provider() -> str:
+    return str(LLM_CONFIG.get("provider") or os.environ.get("LLM_PROVIDER") or "openai").strip().lower()
+
+
+def get_llm_api_key() -> str:
+    return str(os.environ.get("LLM_API_KEY") or "").strip()
+
+
+def get_llm_temperature(key: str) -> float:
+    if key not in DEFAULT_LLM_TEMPERATURES:
+        raise KeyError(f"Unknown LLM temperature setting: {key}")
+    value = LLM_CONFIG.get(key)
+    if value is None:
+        return DEFAULT_LLM_TEMPERATURES[key]
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_LLM_TEMPERATURES[key]
+
+
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 RESEND_FROM = os.environ.get("RESEND_FROM", "").strip()
 # ── Data size limits ──────────────────────────────────────────────────────────
@@ -137,27 +252,21 @@ MAX_DATA_ROWS = 50_000
 # rows, entities as columns). Time-series dimensions are never transposed.
 TRANSPOSE_COLS = env_int("TRANSPOSE_COLS", 30)
 
-# Max pivot rows forwarded to Claude for analysis. Keeps prompts well under
+# Max pivot rows forwarded to the AI model for analysis. Keeps prompts well under
 # the 200K token limit even when MAX_DATA_ROWS is large. Raw TM1 cells contain
 # a _dimensions dict that duplicates every field, making them 5-10x larger
 # than the equivalent pivot row — so 300 pivoted rows ≈ safe budget.
 AI_MAX_ROWS = env_int("AI_MAX_ROWS", 300)
 
-# ── Claude token budgets ───────────────────────────────────────────────────────
-# MDX generation: needs enough room for a complete SELECT/FROM/WHERE statement.
-MDX_MAX_TOKENS = env_int("MDX_MAX_TOKENS", 800)
+# ── AI token budgets ───────────────────────────────────────────────────────────
+# MDX generation: keep enough room for the visible SELECT/FROM/WHERE statement.
+MDX_MAX_TOKENS = env_int("MDX_MAX_TOKENS", 4096)
 
-# Cube selection: only returns a short JSON object with 2-3 cube names.
-CUBE_SELECT_MAX_TOKENS = env_int("CUBE_SELECT_MAX_TOKENS", 400)
+# Cube selection: compact JSON with 2-3 cube names plus short reasons.
+CUBE_SELECT_MAX_TOKENS = env_int("CUBE_SELECT_MAX_TOKENS", 700)
 
 # Financial analysis: narrative text + SUGGESTIONS JSON array.
 ANALYSIS_MAX_TOKENS = env_int("ANALYSIS_MAX_TOKENS", 1800)
 
-# Task-specific model temperatures. Keep planning/MDX deterministic; allow a
-# little more natural language variation for narrative analysis and suggestions.
-CUBE_SELECT_TEMPERATURE = env_float("CUBE_SELECT_TEMPERATURE", 0.0)
-MDX_TEMPERATURE = env_float("MDX_TEMPERATURE", 0.0)
-ATTRIBUTE_INTENT_TEMPERATURE = env_float("ATTRIBUTE_INTENT_TEMPERATURE", 0.0)
-SEMANTIC_PROFILE_TEMPERATURE = env_float("SEMANTIC_PROFILE_TEMPERATURE", 0.2)
-ANALYSIS_TEMPERATURE = env_float("ANALYSIS_TEMPERATURE", 0.2)
-SUGGESTIONS_TEMPERATURE = env_float("SUGGESTIONS_TEMPERATURE", 0.4)
+# Semantic profile generation: compact JSON mapping schema terms to business language.
+SEMANTIC_PROFILE_MAX_TOKENS = env_int("SEMANTIC_PROFILE_MAX_TOKENS", 6000)

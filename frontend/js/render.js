@@ -54,17 +54,65 @@ function _sourceCardsHtml(sources, reasoning, skippedSources) {
       </div>
       <div class="mb-1 font-mono text-[12.5px] font-medium text-cw-blue">${esc(source.cube)}</div>
       <div class="text-[12px] leading-5 text-cw-sub">${esc(source.reasoning || "")}</div>
+      ${_planAssumptionsHtml(source.plan)}
     </div>`).join("");
 
   const skippedNotice = skippedSources.length
-    ? `<div class="mt-3 rounded-lg border border-cw-border bg-white/70 px-4 py-3 text-[12px] leading-5 text-cw-muted">
-        Skipped ${skippedSources.length} source${skippedSources.length === 1 ? "" : "s"} with no usable data: ${skippedSources.map(s => esc(s.cube)).join(", ")}.
-      </div>`
+    ? `<details class="mt-3 rounded-lg border border-amber-200 bg-amber-50/70 px-4 py-3 text-[12px] leading-5 text-amber-800">
+        <summary class="cursor-pointer font-medium">
+          Skipped ${skippedSources.length} source${skippedSources.length === 1 ? "" : "s"} with no usable data: ${skippedSources.map(s => esc(s.cube)).join(", ")}.
+        </summary>
+        <div class="mt-3 space-y-3">
+          ${skippedSources.map((source, index) => _skippedSourceHtml(source, index)).join("")}
+        </div>
+      </details>`
     : "";
 
   return `<div class="grid grid-cols-1 gap-3">${cards}</div>
     <div class="mt-3 rounded-lg border border-cw-blueMid bg-cw-blueLite px-4 py-3 text-[13px] leading-relaxed text-cw-sub">${esc(reasoning)}</div>
     ${skippedNotice}`;
+}
+
+function _planAssumptionsHtml(plan) {
+  if (!plan || !Array.isArray(plan.assumptions) || !plan.assumptions.length) return "";
+  const renderBold = text =>
+    esc(text).replace(/\*\*([^*]+)\*\*/g, '<strong class="font-semibold text-amber-900">$1</strong>');
+  const items = plan.assumptions.map(a => `<li>${renderBold(String(a))}</li>`).join("");
+  const conf = typeof plan.confidence === "number" ? Math.round(plan.confidence * 100) : null;
+  const confLabel = conf !== null ? ` (${conf}% confident)` : "";
+  return `
+    <div class="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-900">
+      <div class="mb-1 flex items-center gap-1.5 font-semibold">
+        <i class="fa-solid fa-wand-magic-sparkles text-[10px]"></i>
+        <span>I made these assumptions${confLabel} — reply with adjustments if you need different ones.</span>
+      </div>
+      <ul class="list-disc space-y-0.5 pl-4">${items}</ul>
+    </div>`;
+}
+
+function _skippedSourceHtml(source, index) {
+  const attempts = Array.isArray(source.mdx_attempts) && source.mdx_attempts.length
+    ? `<details class="mt-2"><summary class="cursor-pointer font-medium">Repair attempts</summary>
+        <pre class="mt-1 max-h-44 overflow-auto whitespace-pre-wrap rounded-md bg-white/80 p-2 font-mono text-[11px] text-amber-900">${esc(source.mdx_attempts.join("\n"))}</pre>
+      </details>`
+    : "";
+  const mdx = source.generated_mdx
+    ? `<details class="mt-2"><summary class="cursor-pointer font-medium">Show MDX</summary>
+        <pre class="mt-1 max-h-56 overflow-auto whitespace-pre-wrap rounded-md bg-white/80 p-2 font-mono text-[11px] text-amber-900">${esc(source.generated_mdx)}</pre>
+      </details>`
+    : `<div class="mt-2 rounded-md bg-white/70 p-2 font-mono text-[11px] text-amber-700">No MDX generated for this source.</div>`;
+  return `<div class="rounded-md border border-amber-200 bg-white/70 p-3">
+    <div class="flex items-start justify-between gap-3">
+      <div>
+        <div class="text-[10px] font-semibold uppercase tracking-[0.08em] text-amber-600">Skipped source ${index + 1}</div>
+        <div class="mt-0.5 font-mono text-[12px] font-medium text-amber-900">${esc(source.cube || "")}</div>
+      </div>
+      <span class="shrink-0 rounded-full border border-amber-300 bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700">${esc(source.status || "skipped")}</span>
+    </div>
+    ${source.reasoning ? `<div class="mt-2 text-[11px] text-amber-700">${esc(source.reasoning)}</div>` : ""}
+    ${mdx}
+    ${attempts}
+  </div>`;
 }
 
 function _previewCount(source) {
@@ -164,7 +212,7 @@ function renderSingleMessage(data, msgIdx) {
     ? `<div class="mt-6 border-t border-cw-borderLow pt-5">
         <p class="mb-3 text-[11px] font-semibold uppercase tracking-[0.08em] text-cw-muted">Ask a follow-up</p>
         <div class="flex flex-wrap gap-2">
-          ${data.suggestions.map(s => `<button type="button" onclick="setQ(${JSON.stringify(s)})"
+          ${data.suggestions.map(s => `<button type="button" data-followup="${esc(s)}"
             class="rounded-full border border-cw-blueMid bg-white px-3 py-1.5 text-[12px] text-cw-blue transition hover:border-cw-blue hover:bg-cw-blueLite">${esc(s)}</button>`).join("")}
         </div>
       </div>`
@@ -200,7 +248,16 @@ function renderConversation() {
   setChatMode(true);
   updateShareStatus("");
   document.getElementById("out").innerHTML = currentMessages.map((msg, i) => renderSingleMessage(msg, i)).join("");
+  bindFollowUpButtons();
   initCharts();
+}
+
+function bindFollowUpButtons() {
+  document.querySelectorAll("[data-followup]").forEach(button => {
+    if (button.dataset.boundFollowup === "true") return;
+    button.dataset.boundFollowup = "true";
+    button.addEventListener("click", () => setQ(button.dataset.followup || ""));
+  });
 }
 
 function render(data) {

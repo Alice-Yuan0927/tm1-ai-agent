@@ -18,23 +18,39 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from .ai import (
+    PLAN_SURFACE_THRESHOLD,
     _parse_suggestions,
     detect_attribute_intent,
     find_clarifications,
+    find_schema_clarification,
     generate_cube_mdx,
     generate_homepage_suggestions,
     generate_semantic_profile,
     init_db,
     is_unclear_question,
     retrieve_similar,
+    repair_cube_mdx,
     save_query,
     select_cubes_with_profile,
     stream_financial_analysis,
+    try_plan_mdx,
 )
-from .config import AI_MAX_ROWS, CLAUDE_MODEL, FRONTEND_DIR, TM1_CONFIG
+from .tm1.cache import find_question_element_matches
+from .ai.service import validate_generated_mdx
+from .config import AI_MAX_ROWS, get_llm_model, FRONTEND_DIR, TM1_CONFIG
 from .config import public_tm1_config, update_tm1_config
+from .llm_models import load_llm_model_catalog, refresh_llm_model_catalog, validate_llm_selection
+from .ai.result_validators import (
+    result_shape_issue as validate_result_shape,
+    specific_focus_issue as validate_specific_focus,
+    statement_line_item_issue as validate_statement_line_items,
+    default_filter_issue as validate_default_filter,
+    account_dim_choice_issue as validate_account_dim_choice,
+)
+from .ai.finance_semantics import build_finance_semantic_profile
 from .email_service import send_analysis_email
 from .schemas import EmailRequest, QuestionRequest, TM1ConfigRequest
+from .response_messages import no_usable_data_message
 from .tm1 import (
     build_structured_preview,
     execute_generated_mdx,
@@ -43,6 +59,7 @@ from .tm1 import (
     get_current_period_defaults,
     get_cube_schema,
     get_cubes_with_descriptions,
+    get_dim_hierarchy_edges,
     get_dim_metadata,
     get_last_synced_at,
     get_named_attribute_map,
@@ -55,27 +72,44 @@ from .tm1 import is_empty as _schema_is_empty
 
 app = FastAPI(title="TM1 AI Analyst")
 _PROFILE_DIR = Path(__file__).parent / "model_profiles"
+_MAX_MDX_ATTEMPTS = 3
+_CONNECTION_ERROR_PATTERNS = (
+    "connection refused",
+    "failed to establish",
+    "max retries exceeded",
+    "name or service not known",
+    "nodename nor servname",
+    "timed out",
+    "timeout",
+    "unauthorized",
+    "authentication",
+    "certificate",
+    "ssl",
+)
 
 # ── Suggested questions cache ─────────────────────────────────────────────────
-# Generated once by Claude on first request and held in memory.
+# Generated once by the AI provider on first request and held in memory.
 # Cleared whenever sync-schema runs so suggestions stay current after a model change.
 _suggestions_cache: list[str] | None = None
 
 # ── TM1 health state ──────────────────────────────────────────────────────────
-# Status is updated passively whenever a real TM1 API call succeeds or fails,
-# so there is zero monitoring overhead between user requests.
-# A single probe fires on the first GET /api/health to get the server name and
-# set an initial status; it never fires again after that.
+# Status is updated passively whenever a real TM1 API call succeeds or fails.
+# The server name is probed on first health check and whenever the connection
+# settings change, so the UI follows the active TM1 instance.
 _tm1_health_lock = threading.Lock()
 _tm1_health: dict = {"status": "unknown", "name": "", "ts": 0.0}
 
 
-def _probe_tm1_once() -> tuple[str, str]:
-    """Called exactly once (when status is still 'unknown') to get server name."""
+def _tm1_fallback_name() -> str:
+    address = TM1_CONFIG.get("address", "")
+    port = TM1_CONFIG.get("port", "")
+    return f"{address}:{port}" if port else str(address)
+
+
+def _probe_tm1_name() -> tuple[str, str]:
+    """Probe the active TM1 connection and return status plus display name."""
     from TM1py import TM1Service
-    address  = TM1_CONFIG.get("address", "")
-    port     = TM1_CONFIG.get("port", "")
-    fallback = f"{address}:{port}"
+    fallback = _tm1_fallback_name()
     try:
         with TM1Service(**TM1_CONFIG) as tm1:
             name = tm1.server.get_server_name() or fallback
@@ -84,11 +118,16 @@ def _probe_tm1_once() -> tuple[str, str]:
         return "down", fallback
 
 
-def _update_tm1_health(status: str) -> None:
-    """Passively update TM1 status. Name is preserved from the initial probe."""
+def _update_tm1_health(status: str, name: str | None = None) -> None:
+    """Passively update TM1 status, preserving the display name unless given."""
     global _tm1_health
     with _tm1_health_lock:
-        _tm1_health = {**_tm1_health, "status": status, "ts": _time.monotonic()}
+        next_health = {**_tm1_health, "status": status, "ts": _time.monotonic()}
+        if name is not None:
+            next_health["name"] = name
+        elif not next_health.get("name"):
+            next_health["name"] = _tm1_fallback_name()
+        _tm1_health = next_health
 
 
 @app.on_event("startup")
@@ -123,7 +162,7 @@ def frontend_asset(asset_name: str):
         "frontend.tailwind.js",
         "config.js", "markdown.js", "charts.js", "table.js",
         "store.js", "share.js", "ui.js", "sidebar.js",
-        "render.js", "api.js", "main.js",
+        "cubes.js", "render.js", "api.js", "main.js",
     }
     if asset_name not in allowed_assets:
         raise HTTPException(404, "Not found")
@@ -139,12 +178,23 @@ def frontend_js_asset(asset_name: str):
         "frontend.tailwind.js",
         "config.js", "markdown.js", "charts.js", "table.js",
         "store.js", "share.js", "ui.js", "sidebar.js",
-        "render.js", "api.js", "main.js",
+        "cubes.js", "render.js", "api.js", "main.js",
     }
     if asset_name not in allowed_assets:
         raise HTTPException(404, "Not found")
     return FileResponse(
         FRONTEND_DIR / "js" / asset_name,
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
+@app.get("/js/vendor/{asset_name}")
+def frontend_vendor_js_asset(asset_name: str):
+    allowed_assets = {"chartjs-plugin-datalabels.min.js"}
+    if asset_name not in allowed_assets:
+        raise HTTPException(404, "Not found")
+    return FileResponse(
+        FRONTEND_DIR / "js" / "vendor" / asset_name,
         headers={"Cache-Control": "no-store, max-age=0"},
     )
 
@@ -170,7 +220,7 @@ def health():
             _tm1_health = {**_tm1_health, "status": "checking"}
 
     if needs_probe:
-        status, name = _probe_tm1_once()
+        status, name = _probe_tm1_name()
         with _tm1_health_lock:
             _tm1_health = {"status": status, "name": name, "ts": _time.monotonic()}
 
@@ -179,7 +229,8 @@ def health():
 
     return {
         "status": "ok",
-        "model": CLAUDE_MODEL,
+        "model": get_llm_model(),
+        "llm_warnings": validate_llm_selection(),
         "tm1_status":    cached["status"],
         "tm1_name":      cached["name"],
         "last_synced_at": get_last_synced_at(),
@@ -190,6 +241,7 @@ def health():
 def sync_schema_endpoint():
     """Re-sync the TM1 schema cache (cubes, dimensions, elements)."""
     global _suggestions_cache
+    model_catalog, llm_warnings = refresh_llm_model_catalog()
     try:
         summary = sync_schema()
     except Exception as exc:
@@ -197,12 +249,45 @@ def sync_schema_endpoint():
         raise HTTPException(500, f"Schema sync failed: {exc}") from exc
     _update_tm1_health("up")
     _suggestions_cache = None  # invalidate so next /api/suggestions regenerates
-    return {"success": True, "last_synced_at": get_last_synced_at(), **summary}
+    return {
+        "success": True,
+        "last_synced_at": get_last_synced_at(),
+        "llm_model_catalog": model_catalog,
+        "llm_warnings": llm_warnings,
+        **summary,
+    }
 
 
 @app.get("/api/tm1-config")
 def get_tm1_config():
-    return public_tm1_config()
+    return {
+        **public_tm1_config(),
+        "llm_model_catalog": load_llm_model_catalog(),
+        "llm_warnings": validate_llm_selection(),
+    }
+
+
+@app.post("/api/llm-models/refresh")
+def refresh_llm_models(payload: dict[str, Any] = Body(default_factory=dict)):
+    """Re-pull the provider's model list without touching TM1 config / cube sync."""
+    provider = str(payload.get("provider", "")).strip() or None
+    model = payload.get("model")
+    model = str(model).strip() if model is not None else None
+    try:
+        catalog, warnings = refresh_llm_model_catalog(provider, model)
+    except Exception as exc:
+        raise HTTPException(500, f"Model refresh failed: {exc}") from exc
+    provider_key = (provider or "").lower() or None
+    provider_entry = catalog.get(provider_key) if provider_key else None
+    return {
+        "success": True,
+        "provider": provider_key,
+        "models": list((provider_entry or {}).get("models") or []),
+        "source_type": (provider_entry or {}).get("source_type", ""),
+        "refreshed_at": (provider_entry or {}).get("refreshed_at", ""),
+        "llm_model_catalog": catalog,
+        "llm_warnings": warnings,
+    }
 
 
 @app.post("/api/tm1-config")
@@ -210,23 +295,32 @@ def save_tm1_config(req: TM1ConfigRequest):
     global _suggestions_cache, _tm1_health
     try:
         config = update_tm1_config(req.dict())
+        model_catalog, llm_warnings = refresh_llm_model_catalog(
+            req.llm_provider,
+            req.llm_model,
+        )
+        with _tm1_health_lock:
+            _tm1_health = {
+                "status": "checking",
+                "name": _tm1_fallback_name(),
+                "ts": _time.monotonic(),
+            }
         summary = sync_schema()
+        tm1_status, tm1_name = _probe_tm1_name()
     except Exception as exc:
         _update_tm1_health("down")
         raise HTTPException(500, f"TM1 configuration save failed: {exc}") from exc
 
-    _update_tm1_health("up")
+    _update_tm1_health(tm1_status, tm1_name)
     _suggestions_cache = None
-    with _tm1_health_lock:
-        _tm1_health = {
-            "status": "up",
-            "name": f"{config.get('address')}:{config.get('port')}",
-            "ts": _time.monotonic(),
-        }
     return {
         "success": True,
         "config": config,
+        "tm1_status": tm1_status,
+        "tm1_name": tm1_name,
         "last_synced_at": get_last_synced_at(),
+        "llm_model_catalog": model_catalog,
+        "llm_warnings": llm_warnings,
         **summary,
     }
 
@@ -234,11 +328,34 @@ def save_tm1_config(req: TM1ConfigRequest):
 @app.post("/api/model-profile/generate")
 def generate_model_profile_endpoint():
     try:
-        profile = generate_semantic_profile(_schema_summary_for_profile())
+        schema_summary = _schema_summary_for_profile()
+        try:
+            profile = generate_semantic_profile(schema_summary)
+        except Exception as profile_exc:
+            profile = _fallback_semantic_profile(schema_summary, str(profile_exc))
+        profile["finance_semantics"] = build_finance_semantic_profile(schema_summary)
+        # Preserve user-pinned default_filters across regeneration. We layer
+        # in this order so user pins win over fresh auto-detection:
+        #   1. auto-detected from the new schema (newly-generated profile)
+        #   2. current period defaults from TM1 sys parameter
+        #   3. existing profile's user-pinned dim-level filters (most important)
+        existing_profile = _load_current_model_profile() or {}
+        existing_filters = dict(existing_profile.get("default_filters") or {})
         profile["default_filters"] = {
             **dict(profile.get("default_filters") or {}),
             **get_current_period_defaults(),
+            **existing_filters,
         }
+        # dim_roles: similarly preserve any hand-corrected role overrides.
+        auto_roles = _build_dim_roles_map(schema_summary)
+        existing_roles = dict(existing_profile.get("dim_roles") or {})
+        profile["dim_roles"] = {**auto_roles, **existing_roles}
+        guidance = list(profile.get("selection_guidance") or [])
+        guidance.append(
+            "For financial statement questions, use finance_semantics to choose "
+            "the matched cube and put the mapped line_item_dimension on ROWS."
+        )
+        profile["selection_guidance"] = guidance
         path = _save_current_model_profile(profile)
     except Exception as exc:
         raise HTTPException(500, f"Semantic profile generation failed: {exc}") from exc
@@ -247,12 +364,69 @@ def generate_model_profile_endpoint():
         "success": True,
         "profile": profile,
         "profile_file": path.name,
+        "warning": profile.get("profile_generation_warning", ""),
+        "fallback": profile.get("source") == "deterministic_fallback_after_ai_profile_error",
     }
+
+
+def _fallback_semantic_profile(schema_summary: dict, error_message: str) -> dict:
+    cubes = list(schema_summary.get("cubes") or [])
+    return {
+        "profile_version": 1,
+        "model_name": "generated_fallback",
+        "source": "deterministic_fallback_after_ai_profile_error",
+        "profile_generation_warning": error_message[:800],
+        "business_terms": {},
+        "metric_mappings": {},
+        "cube_roles": {
+            str(cube.get("cube", "")): {
+                "role": str(cube.get("description", "")) or str(cube.get("cube", "")),
+                "best_for": [],
+                "avoid_for": [],
+            }
+            for cube in cubes[:20]
+            if cube.get("cube")
+        },
+        "default_filters": {},
+        "selection_guidance": [
+            "Fallback profile generated because AI semantic profile generation failed.",
+            "Use cube names, dimension names, and finance_semantics for routing.",
+        ],
+        "chart_guidance": {
+            "percentage_terms": ["percent", "percentage", "pct", "share", "ratio", "rate"],
+            "split_percentage_measures": True,
+            "prefer_share_chart": "doughnut",
+            "prefer_absolute_chart": "bar",
+        },
+    }
+
+
+def _build_dim_roles_map(schema_summary: dict) -> dict[str, str]:
+    """Classify every distinct dim in the connected model by semantic role
+    (entity_subject / counterparty / business_classifier / line_item /
+    scenario / time / measure / data_source / metadata / unclassified).
+    The map is consumed by the planner and validators to decide which dims
+    accept the user's entity-name mentions."""
+    from .ai.dim_roles import classify_dim
+    out: dict[str, str] = {}
+    for cube in schema_summary.get("cubes") or []:
+        for dim in cube.get("dimensions") or []:
+            if isinstance(dim, str):
+                # Schema summary sometimes flattens dims to just their names.
+                # Fall back to a name-only classify.
+                synthetic = {"name": dim}
+                out.setdefault(dim, classify_dim(synthetic))
+                continue
+            name = str(dim.get("name", "")).strip() if isinstance(dim, dict) else ""
+            if not name or name in out:
+                continue
+            out[name] = classify_dim(dim)
+    return out
 
 
 @app.get("/api/suggestions")
 def get_suggestions():
-    """Return 3 Claude-generated suggested questions based on the connected TM1 cubes."""
+    """Return 3 AI-generated suggested questions based on the connected TM1 cubes."""
     global _suggestions_cache
     if _suggestions_cache is not None:
         return {"suggestions": _suggestions_cache}
@@ -441,6 +615,106 @@ def _schema_with_explicit_employee_ids(schema: dict, question: str) -> dict:
     return {**schema, "dimensions": patched_dims}
 
 
+def _execute_mdx_with_repair(
+    question: str,
+    cube: str,
+    schema: dict,
+    mdx: str,
+    history: list[dict],
+    similar_queries: list[dict],
+    model_profile: dict | None,
+) -> tuple[list[dict[str, object]], dict[str, object], str, list[str]]:
+    """Execute generated MDX, asking the AI provider to repair it after TM1 errors."""
+    attempts: list[str] = []
+    current_mdx = mdx
+    last_error = ""
+
+    for attempt in range(1, _MAX_MDX_ATTEMPTS + 1):
+        try:
+            validate_generated_mdx(current_mdx, cube)
+            default_issue = validate_default_filter(question, schema, current_mdx, model_profile=model_profile)
+            if default_issue:
+                raise RuntimeError(default_issue)
+            account_choice_issue = validate_account_dim_choice(question, schema, current_mdx)
+            if account_choice_issue:
+                raise RuntimeError(account_choice_issue)
+            rows, layout = execute_generated_mdx(cube, current_mdx)
+            shape_issue = _result_shape_issue(rows, layout)
+            if shape_issue:
+                raise RuntimeError(shape_issue)
+            focus_issue = _specific_focus_issue(question, schema, rows, layout)
+            if focus_issue:
+                raise RuntimeError(focus_issue)
+            statement_issue = _statement_line_item_issue(question, schema, layout, model_profile=model_profile)
+            if statement_issue:
+                raise RuntimeError(statement_issue)
+            return rows, layout, current_mdx, attempts
+        except RuntimeError as exc:
+            last_error = str(exc)
+            attempts.append(f"attempt {attempt}: {last_error}")
+            if _looks_like_connection_error(last_error):
+                raise
+            if attempt >= _MAX_MDX_ATTEMPTS:
+                break
+            try:
+                current_mdx = repair_cube_mdx(
+                    question,
+                    schema,
+                    current_mdx,
+                    last_error,
+                    history,
+                    similar_queries=similar_queries,
+                    model_profile=model_profile,
+                )
+            except RuntimeError as repair_exc:
+                attempts.append(f"repair {attempt}: {repair_exc}")
+                break
+
+    raise RuntimeError(last_error or "MDX execution failed")
+
+
+def _result_shape_issue(rows: list[dict[str, object]], layout: dict[str, object]) -> str | None:
+    if not rows:
+        return None
+
+    column_dims = cast(list[str], layout.get("column_dimensions") or [])
+    if not column_dims:
+        return None
+
+    try:
+        dim_meta = get_dim_metadata(column_dims)
+    except Exception:
+        dim_meta = {}
+    try:
+        hierarchy_edges = get_dim_hierarchy_edges(column_dims)
+    except Exception:
+        hierarchy_edges = {}
+
+    return validate_result_shape(rows, layout, dim_meta, hierarchy_edges)
+
+def _specific_focus_issue(
+    question: str,
+    schema: dict,
+    rows: list[dict[str, object]],
+    layout: dict[str, object],
+) -> str | None:
+    return validate_specific_focus(question, schema, rows, layout)
+
+
+def _statement_line_item_issue(
+    question: str,
+    schema: dict,
+    layout: dict[str, object],
+    model_profile: dict | None = None,
+) -> str | None:
+    return validate_statement_line_items(question, schema, layout, model_profile=model_profile)
+
+
+def _looks_like_connection_error(message: str) -> bool:
+    text = message.lower()
+    return any(pattern in text for pattern in _CONNECTION_ERROR_PATTERNS)
+
+
 def _analyze_sse_gen(req: QuestionRequest):
     """Sync SSE generator for /api/analyze. Yields `data: {...}\n\n` strings."""
 
@@ -462,7 +736,8 @@ def _analyze_sse_gen(req: QuestionRequest):
         }})
         return
 
-    clarification = find_clarifications(question, req.history)
+    model_profile = _load_current_model_profile()
+    clarification = find_clarifications(question, req.history, model_profile)
     if clarification:
         yield evt({"type": "done", "data": {
             "success": True, "type": "clarification",
@@ -509,21 +784,53 @@ def _analyze_sse_gen(req: QuestionRequest):
     else:
         effective_question = question
 
-    try:
-        selection = select_cubes_with_profile(
-            effective_question,
-            _cube_context_for_selection(cubes),
-            req.history,
-            model_profile=_load_current_model_profile(),
-        )
-    except RuntimeError as exc:
-        yield evt({"type": "error", "message": str(exc)}); return
+    user_scoped = bool(req.selected_cubes)
+    if user_scoped:
+        wanted = {c.strip().lower() for c in req.selected_cubes if c.strip()}
+        manual_cubes = [c for c in cubes if str(c.get("cube", "")).lower() in wanted]
+        if not manual_cubes:
+            yield evt({
+                "type": "error",
+                "message": "Selected cubes are no longer available in the connected TM1 model.",
+                "scope_filtered": True,
+            }); return
+        selected_cubes = [
+            {"cube": c["cube"], "reasoning": "User-selected scope"}
+            for c in manual_cubes
+        ]
+        reasoning = f"User restricted scope to {len(selected_cubes)} cube(s)"
+    else:
+        cube_context = _cube_context_for_selection(cubes)
 
-    selected_cubes = selection.get("cubes") or []
-    reasoning = selection.get("reasoning", "")
-    model_profile = _load_current_model_profile()
-    if not selected_cubes:
-        yield evt({"type": "error", "message": "AI did not return a valid cube selection"}); return
+        schema_clarification = find_schema_clarification(
+            question,
+            cube_context,
+            req.history,
+            model_profile=model_profile,
+        )
+        if schema_clarification:
+            yield evt({"type": "done", "data": {
+                "success": True,
+                "type": "clarification",
+                "question": question,
+                "analysis": schema_clarification,
+            }})
+            return
+
+        try:
+            selection = select_cubes_with_profile(
+                question,
+                cube_context,
+                req.history,
+                model_profile=model_profile,
+            )
+        except RuntimeError as exc:
+            yield evt({"type": "error", "message": str(exc)}); return
+
+        selected_cubes = selection.get("cubes") or []
+        reasoning = selection.get("reasoning", "")
+        if not selected_cubes:
+            yield evt({"type": "error", "message": "AI did not return a valid cube selection"}); return
 
     # Step 2: fetch data from each cube
     yield evt({"type": "step", "step": 2})
@@ -531,7 +838,8 @@ def _analyze_sse_gen(req: QuestionRequest):
     skipped_sources: list[dict[str, Any]] = []
     seen_cubes: set[str] = set()
 
-    for selected in selected_cubes[:3]:
+    cube_limit = 10 if user_scoped else 3
+    for selected in selected_cubes[:cube_limit]:
         cube = str(selected.get("cube", "")).strip()
         source_reasoning = str(selected.get("reasoning", "")).strip()
         if not cube or cube in seen_cubes:
@@ -544,27 +852,81 @@ def _analyze_sse_gen(req: QuestionRequest):
             skipped_sources.append({"cube": cube, "reasoning": source_reasoning, "status": f"schema error: {exc}"}); continue
         schema = _schema_with_explicit_employee_ids(schema, effective_question)
 
-        similar = retrieve_similar(effective_question, cube=cube)
+        # Use effective_question (= prior history + current) so planner and
+        # MDX generation see the FULL intent. Without this, after a
+        # clarification round the current question is just the answer
+        # ("Actual full year") which loses the "P&L statement" keyword from
+        # the original turn.
+        mdx_question = effective_question
+        similar = retrieve_similar(mdx_question, cube=cube)
 
+        # Rule-based intent detection narrows each dim's top_consolidations to
+        # the elements actually relevant to this question, so the planner and
+        # the LLM only see a focused candidate list per dim instead of dozens
+        # of unrelated category rollups.
+        from .ai.query_intent import detect_query_intent, prepare_schema_for_query
+        intent = detect_query_intent(mdx_question)
+        focused_schema = prepare_schema_for_query(
+            schema, mdx_question, intent=intent, model_profile=model_profile
+        )
+        print(f"[query-intent] {cube} primary={intent['primary']} sec={intent['secondaries']} conf={intent['confidence']:.2f}", flush=True)
+
+        plan = None
         try:
-            mdx = generate_cube_mdx(
-                effective_question,
-                schema,
-                req.history,
-                similar_queries=similar,
+            element_matches = find_question_element_matches(mdx_question)
+            plan = try_plan_mdx(
+                mdx_question,
+                focused_schema,
                 model_profile=model_profile,
+                element_matches=element_matches,
             )
-        except RuntimeError as exc:
-            skipped_sources.append({"cube": cube, "reasoning": source_reasoning, "status": f"MDX error: {exc}"}); continue
+        except Exception as exc:  # noqa: BLE001 - planner must never break the request
+            print(f"[mdx-planner] error: {exc}", flush=True)
 
+        if plan is not None:
+            mdx = plan.mdx
+            print(f"[mdx-planner] {cube} pattern={plan.pattern} conf={plan.confidence:.2f}", flush=True)
+        else:
+            try:
+                mdx = generate_cube_mdx(
+                    mdx_question,
+                    focused_schema,
+                    req.history,
+                    similar_queries=similar,
+                    model_profile=model_profile,
+                )
+            except RuntimeError as exc:
+                skipped_sources.append({
+                    "cube": cube,
+                    "reasoning": source_reasoning,
+                    "status": f"MDX error: {exc}",
+                    "generated_mdx": "",
+                    "mdx_attempts": [],
+                }); continue
+
+        mdx_attempts: list[str] = []
         try:
-            rows, layout = execute_generated_mdx(cube, mdx)
+            rows, layout, mdx, mdx_attempts = _execute_mdx_with_repair(
+                mdx_question,
+                cube,
+                schema,
+                mdx,
+                req.history,
+                similar,
+                model_profile,
+            )
         except RuntimeError as exc:
             # "Cannot execute MDX at host:port" → connection failure
             # MDX syntax errors also surface here; mark down only on clear connect failures
-            if "Cannot execute MDX at" in str(exc):
+            if _looks_like_connection_error(str(exc)):
                 _update_tm1_health("down")
-            skipped_sources.append({"cube": cube, "reasoning": source_reasoning, "status": f"error: {exc}", "generated_mdx": mdx}); continue
+            skipped_sources.append({
+                "cube": cube,
+                "reasoning": source_reasoning,
+                "status": f"error: {exc}",
+                "generated_mdx": mdx,
+                "mdx_attempts": mdx_attempts,
+            }); continue
 
         _update_tm1_health("up")
 
@@ -620,19 +982,34 @@ def _analyze_sse_gen(req: QuestionRequest):
             else len(full_preview["rows"])
         )
         save_query(effective_question, cube, mdx, row_count=effective_row_count)
+        plan_dict = None
+        if plan is not None and plan.confidence < PLAN_SURFACE_THRESHOLD:
+            plan_dict = plan.to_dict()
         sources.append({
             "cube": cube, "reasoning": source_reasoning,
             "data_row_count": effective_row_count,
             "data_preview": rows[:15],
             "structured_preview": limited_preview,
             "applied_filters": layout.get("applied_filters", []),
+            "generated_mdx": mdx,
+            "mdx_attempts": mdx_attempts,
             "analysis_rows": rows,
+            "plan": plan_dict,
             "_full_preview": full_preview,   # clean pivoted data for AI; stripped before sending to frontend
         })
 
     if not sources:
-        skipped_text = "; ".join(f"{s['cube']} ({s['status']})" for s in skipped_sources)
-        yield evt({"type": "error", "message": f"No usable data. Tried: {skipped_text}"}); return
+        message, detail = no_usable_data_message(skipped_sources)
+        payload = {
+            "type": "error",
+            "message": message,
+            "detail": detail,
+            "skipped": skipped_sources,
+        }
+        if user_scoped:
+            payload["scope_filtered"] = True
+            payload["scoped_cubes"] = [str(c.get("cube", "")) for c in selected_cubes]
+        yield evt(payload); return
 
     # Step 3: signal data ready, send sources to frontend
     yield evt({"type": "step", "step": 3})
@@ -640,9 +1017,9 @@ def _analyze_sse_gen(req: QuestionRequest):
     response_sources = [{k: v for k, v in s.items() if k not in _internal} for s in sources]
     yield evt({"type": "sources", "sources": response_sources, "skipped": skipped_sources, "reasoning": reasoning})
 
-    # Build compact sources for Claude — pivoted structured data only, no raw cells.
+    # Build compact sources for AI analysis: pivoted structured data only, no raw cells.
     # Raw analysis_rows contain _dimensions duplicates and can be 10× larger than
-    # the pivoted form; sending them to Claude causes prompt-too-long errors.
+    # the pivoted form; sending them to the model causes prompt-too-long errors.
     ai_sources = [_source_for_ai(s) for s in sources]
 
     # Stream analysis text chunk by chunk

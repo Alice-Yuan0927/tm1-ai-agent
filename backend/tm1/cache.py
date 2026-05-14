@@ -21,6 +21,7 @@ Tables
 cubes           name, description, measure_dim
 dim_in_cube     cube_name, dim_name, position, is_measure, is_time_dim
 elements        dim_name, element_name, element_type
+element_edges   dim_name, parent_name, child_name, weight
 dim_attributes  dim_name, attribute_name, attribute_type
 element_aliases dim_name, element_name, alias_value
                 One row per element, populated only for dimensions that have
@@ -83,16 +84,127 @@ def _attr_type_value(raw) -> str:
 
 
 def _elem_type_value(raw) -> str:
-    """Normalise TM1py ElementTypes enum → plain string (Numeric/String/Consolidated)."""
+    """Normalise TM1py ElementTypes enum → plain string (Numeric/String/Consolidated).
+
+    TM1py's ElementTypes enum uses numeric values: NUMERIC=1, STRING=2, CONSOLIDATED=3.
+    Earlier versions of this function returned `.value` (the int code) instead of the
+    name, which silently broke every downstream "element_type = 'Consolidated'" query.
+    """
     if raw is None:
         return "Numeric"
-    if hasattr(raw, "value"):          # enum member
-        return str(raw.value)
-    s = str(raw)
+    # Prefer the enum's name (e.g. ElementTypes.CONSOLIDATED.name == "CONSOLIDATED").
+    name = getattr(raw, "name", None)
+    if name:
+        candidate = str(name).strip().lower()
+        for t in ("Consolidated", "String", "Numeric"):
+            if t.lower() == candidate:
+                return t
+    s = str(raw).strip()
+    # TM1py / REST API sometimes hands back integer codes as strings.
+    code_map = {"1": "Numeric", "2": "String", "3": "Consolidated"}
+    if s in code_map:
+        return code_map[s]
     for t in ("Consolidated", "String", "Numeric"):
         if t.lower() in s.lower():
             return t
     return "Numeric"
+
+
+def _component_name(component) -> str:
+    for attr in ("element_name", "name", "component_name"):
+        value = getattr(component, attr, None)
+        if value:
+            return str(value)
+    if isinstance(component, dict):
+        for key in ("element_name", "name", "component_name"):
+            if component.get(key):
+                return str(component[key])
+    return str(component or "")
+
+
+def _fetch_dim_edges(tm1, dim_name: str) -> list[tuple[str, str, float]]:
+    """Fall-back hierarchy fetch when `element.components` came back empty.
+
+    TM1py's `get_elements()` does not always populate the `components` field
+    depending on server/REST version, so we try a few alternative APIs and
+    keep the first one that returns edges. Order is most-direct to most-
+    expensive.
+    """
+    elements_ns = getattr(tm1, "elements", None)
+    if elements_ns is None:
+        return []
+
+    # 1. tm1.elements.get_edges(dim, hier) -> dict {(parent, child): weight}
+    get_edges = getattr(elements_ns, "get_edges", None)
+    if callable(get_edges):
+        try:
+            raw = get_edges(dim_name, dim_name)
+            if isinstance(raw, dict):
+                return [
+                    (str(p), str(c), float(w) if w is not None else 1.0)
+                    for (p, c), w in raw.items()
+                    if p and c
+                ]
+            if raw:
+                edges: list[tuple[str, str, float]] = []
+                for item in raw:
+                    if isinstance(item, (tuple, list)) and len(item) >= 2:
+                        parent, child, *rest = item
+                        weight = float(rest[0]) if rest and rest[0] is not None else 1.0
+                        edges.append((str(parent), str(child), weight))
+                if edges:
+                    return edges
+        except Exception:
+            pass
+
+    # 2. tm1.dimensions.hierarchies.get(dim, hier).edges
+    try:
+        hierarchies = tm1.dimensions.hierarchies.get(dim_name, dim_name)
+        edges_obj = getattr(hierarchies, "edges", None)
+        if edges_obj:
+            if isinstance(edges_obj, dict):
+                return [
+                    (str(p), str(c), float(w) if w is not None else 1.0)
+                    for (p, c), w in edges_obj.items()
+                    if p and c
+                ]
+    except Exception:
+        pass
+
+    # 3. Per-consolidation children lookup (slowest, only if needed)
+    try:
+        cons_names = elements_ns.get_consolidated_element_names(dim_name, dim_name)
+    except Exception:
+        cons_names = []
+    edges: list[tuple[str, str, float]] = []
+    for parent in cons_names or []:
+        try:
+            children = elements_ns.get_members_under_consolidation(dim_name, dim_name, parent, max_depth=1)
+            for c in children or []:
+                child = str(getattr(c, "name", c))
+                if child and child != parent:
+                    edges.append((str(parent), child, 1.0))
+        except Exception:
+            continue
+    return edges
+
+
+def _component_weight(component) -> float:
+    for attr in ("weight", "factor"):
+        value = getattr(component, attr, None)
+        if value is not None:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return 1.0
+    if isinstance(component, dict):
+        for key in ("weight", "factor"):
+            if component.get(key) is not None:
+                try:
+                    return float(component[key])
+                except (TypeError, ValueError):
+                    return 1.0
+    return 1.0
 
 
 def _normalise_month(value: object) -> str:
@@ -220,6 +332,17 @@ def init_schema_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_elem_lower
                 ON elements (LOWER(element_name), dim_name);
 
+            CREATE TABLE IF NOT EXISTS element_edges (
+                dim_name    TEXT NOT NULL,
+                parent_name TEXT NOT NULL,
+                child_name  TEXT NOT NULL,
+                weight      REAL DEFAULT 1,
+                PRIMARY KEY (dim_name, parent_name, child_name)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_element_edges_child
+                ON element_edges (dim_name, child_name);
+
             CREATE TABLE IF NOT EXISTS dim_attributes (
                 dim_name       TEXT NOT NULL,
                 attribute_name TEXT NOT NULL,
@@ -297,6 +420,7 @@ def sync_schema() -> dict:
 
         # Fetch elements WITH their types (Numeric / String / Consolidated)
         dim_elements: dict[str, list[tuple[str, str]]] = {}
+        dim_edges:    dict[str, list[tuple[str, str, float]]] = {}
         dim_is_time:  dict[str, bool] = {}
         dim_attrs:    dict[str, list[tuple[str, str]]] = {}
 
@@ -306,17 +430,34 @@ def sync_schema() -> dict:
                 pairs: list[tuple[str, str]] = [
                     (e.name, _elem_type_value(e.element_type)) for e in elems
                 ]
+                # Try the in-element `components` attribute first; if TM1py
+                # didn't populate it, fall through to `get_edges()` (or
+                # equivalents) on the hierarchy.
+                edges: list[tuple[str, str, float]] = []
+                for element in elems:
+                    if _elem_type_value(getattr(element, "element_type", None)) != "Consolidated":
+                        continue
+                    parent = str(getattr(element, "name", "") or "")
+                    for component in getattr(element, "components", []) or []:
+                        child = _component_name(component)
+                        if child:
+                            edges.append((parent, child, _component_weight(component)))
+                if not edges:
+                    edges = _fetch_dim_edges(tm1, dim_name)
                 leaf_names = [name for name, etype in pairs if etype != "Consolidated"]
                 dim_elements[dim_name] = pairs
+                dim_edges[dim_name] = edges
                 dim_is_time[dim_name] = _detect_time_dim(dim_name, leaf_names)
             except Exception:
                 # Fallback: names only, type unknown
                 try:
                     names = list(tm1.elements.get_element_names(dim_name, dim_name))
                     dim_elements[dim_name] = [(n, "Numeric") for n in names]
+                    dim_edges[dim_name] = _fetch_dim_edges(tm1, dim_name)
                     dim_is_time[dim_name] = _detect_time_dim(dim_name, names)
                 except Exception:
                     dim_elements[dim_name] = []
+                    dim_edges[dim_name] = []
                     dim_is_time[dim_name] = False
 
             # Fetch attribute definitions (names + types) for this dimension
@@ -359,6 +500,7 @@ def sync_schema() -> dict:
     with _connect() as conn:
         conn.execute("DELETE FROM element_attribute_values")
         conn.execute("DELETE FROM element_aliases")
+        conn.execute("DELETE FROM element_edges")
         conn.execute("DELETE FROM dim_attributes")
         conn.execute("DELETE FROM elements")
         conn.execute("DELETE FROM dim_in_cube")
@@ -393,6 +535,16 @@ def sync_schema() -> dict:
                 )
                 total_elems += len(pairs)
 
+        total_edges = 0
+        for dim_name, edges in dim_edges.items():
+            if edges:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO element_edges(dim_name, parent_name, child_name, weight)"
+                    " VALUES (?, ?, ?, ?)",
+                    [(dim_name, parent, child, weight) for parent, child, weight in edges],
+                )
+                total_edges += len(edges)
+
         for dim_name, attrs in dim_attrs.items():
             if attrs:
                 conn.executemany(
@@ -426,6 +578,7 @@ def sync_schema() -> dict:
         "cubes": len(cube_dims),
         "dims": len(unique_dims),
         "elements": total_elems,
+        "element_edges": total_edges,
         "aliases": total_aliases,
         "attribute_values": total_attr_vals,
     }
@@ -461,11 +614,199 @@ def lookup_element_dim(element_name: str, candidate_dims: list[str] | None = Non
     return row[0] if row else None
 
 
+_ELEMENT_NORM_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _normalise_element_token(value: str) -> str:
+    """Lower-case and collapse non-alphanumeric runs to a single space."""
+    return _ELEMENT_NORM_RE.sub(" ", (value or "").lower()).strip()
+
+
+_IDENTIFIER_PUNCT_RE = re.compile(r"[-_/\.]")
+
+
+def _is_strong_element_token(token: str) -> bool:
+    """
+    Only count an element as a 'strong' match for clarification suppression if
+    it looks like a domain-specific identifier - rules out generic English
+    words like 'Available' or 'Use' that happen to also be element names.
+    """
+    cleaned = token.strip()
+    if not cleaned:
+        return False
+    if _IDENTIFIER_PUNCT_RE.search(cleaned):
+        return True
+    if len(cleaned.split()) >= 2:
+        return True
+    if any(ch.isdigit() for ch in cleaned):
+        return True
+    return False
+
+
+def find_question_element_matches(question: str, *, max_phrase_words: int = 4, min_token_len: int = 3) -> list[tuple[str, str, str]]:
+    """
+    Find element names that appear inside the user's question after normalising
+    punctuation and whitespace (so "SLIM-HK" matches "Slim HK"). Only returns
+    elements that look like domain-specific identifiers, not generic English
+    words that happen to also be element names.
+
+    Returns a list of (matched_element, dim_name, element_name). Used to suppress
+    premature schema-clarification questions: if the user typed a real element,
+    the AI should not pretend it doesn't exist.
+    """
+    text = (question or "").strip()
+    if not text:
+        return []
+    norm_question = " " + _normalise_element_token(text) + " "
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT dim_name, element_name FROM elements"
+            " WHERE LENGTH(element_name) >= 2"
+        ).fetchall()
+    results: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for dim_name, element_name in rows:
+        if not element_name:
+            continue
+        token = str(element_name).strip()
+        if len(token.split()) > max_phrase_words:
+            continue
+        if not _is_strong_element_token(token):
+            continue
+        needle = _normalise_element_token(token)
+        if len(needle.replace(" ", "")) < min_token_len:
+            continue
+        if f" {needle} " in norm_question:
+            key = (dim_name, element_name)
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append((token, dim_name, element_name))
+    return results
+
+
 def get_cubes_cached() -> list[dict]:
     """All non-system cubes with their descriptions."""
     with _connect() as conn:
         rows = conn.execute("SELECT name, description FROM cubes").fetchall()
     return [{"cube": r[0], "description": r[1] or r[0]} for r in rows]
+
+
+def _pick_default_element(
+    dim_name: str,
+    top_consolidations: list[str],
+    consolidations: list[str],
+    elements: list[str],
+    element_attr_values: dict[str, dict[str, str]] | None = None,
+    child_weights: dict[str, float] | None = None,
+) -> str:
+    """Pick the "broadest aggregate" element to use as default_element.
+
+    Pure naming/structural heuristics — currency-view / source-of-truth
+    style picking happens at QUERY time in the planner, where the user's
+    intent (local vs parent currency, specific element mention, etc.) is
+    known and can override this static default.
+
+      1. Exact match "All <DimBaseName>" / plural variant.
+      2. Name contains the dim base as a word.
+      3. Among "All ..."/"Total ..." parents, shortest = most generic.
+      4. First available consolidation, then any element.
+
+    Unused params (element_attr_values, child_weights) kept on the signature
+    so callers don't break, but their information is consumed downstream.
+    """
+    _ = element_attr_values  # noqa: F841 - intentionally unused here
+    _ = child_weights        # noqa: F841 - consumed by planner instead
+
+    candidates = top_consolidations or consolidations
+    if not candidates:
+        return (elements[:1] or [""])[0]
+
+    base = _dim_base_name(dim_name).lower()
+    base_variants = _base_word_variants(base) if base else set()
+
+    # Tier 1: exact "All <base-variant>"
+    if base_variants:
+        for variant in sorted(base_variants, key=len, reverse=True):
+            target = f"all {variant}"
+            for name in candidates:
+                if name.lower() == target:
+                    return name
+
+    # Tier 2: name contains the dim base (any variant) as a word
+    if base_variants:
+        for name in candidates:
+            lower = name.lower()
+            if any(re.search(rf"\b{re.escape(v)}\b", lower) for v in base_variants):
+                return name
+
+    # Tier 3: among "All ..."/"Total ..." parents, pick the shortest
+    all_total = [n for n in candidates if re.match(r"(?i)^(all|total)\s", n)]
+    if all_total:
+        all_total.sort(key=len)
+        return all_total[0]
+
+    return candidates[0]
+
+
+def _dim_base_name(dim_name: str) -> str:
+    """'Segment 1' -> 'segment', 'Account Report' -> 'account report'.
+    Strips trailing numeric suffix used to disambiguate multi-instance dims."""
+    cleaned = re.sub(r"\s+\d+$", "", str(dim_name).strip())
+    return cleaned.lower()
+
+
+# Tokens that, taken together, identify a P&L bottom-line consolidation.
+# Each tuple is a set of words that must ALL appear (in any order, anywhere)
+# in the candidate name. "Profit / (Loss) after Tax" matches because its
+# words are {profit, loss, after, tax} which is a superset of (profit, after,
+# tax). Matching is punctuation-insensitive.
+_PNL_BOTTOMLINE_TOKEN_SETS: list[set[str]] = [
+    {"net", "income"},
+    {"net", "profit"},
+    {"net", "earnings"},
+    {"profit", "after", "tax"},
+    {"loss", "after", "tax"},
+    {"earnings", "after", "tax"},
+    {"profit", "before", "tax"},
+    {"loss", "before", "tax"},
+    {"earnings", "before", "tax"},
+    {"operating", "profit"},
+    {"operating", "income"},
+    {"operating", "result"},
+    {"gross", "profit"},
+    {"gross", "margin"},
+    {"comprehensive", "income"},
+    {"income", "statement"},
+    {"profit", "and", "loss"},
+    {"ebit"},
+    {"ebitda"},
+    {"result", "for", "year"},
+    {"result", "for", "period"},
+]
+
+
+def _looks_like_pnl_bottom_line(name: str) -> bool:
+    words = set(re.findall(r"[a-z]+", str(name).lower()))
+    if not words:
+        return False
+    return any(tokens.issubset(words) for tokens in _PNL_BOTTOMLINE_TOKEN_SETS)
+
+
+def _base_word_variants(base: str) -> set[str]:
+    """Generate common English plural/singular variants of the dim base name.
+    company -> {company, companies}, account -> {account, accounts},
+    segment -> {segment, segments}, entity -> {entity, entities}."""
+    variants: set[str] = {base}
+    if base.endswith("y") and len(base) > 1:
+        variants.add(base[:-1] + "ies")
+    elif base.endswith("ies") and len(base) > 3:
+        variants.add(base[:-3] + "y")
+    if base.endswith("s") and len(base) > 1:
+        variants.add(base[:-1])
+    else:
+        variants.add(base + "s")
+    return variants
 
 
 def get_cube_schema_cached(cube_name: str) -> dict | None:
@@ -503,18 +844,108 @@ def get_cube_schema_cached(cube_name: str) -> dict | None:
                 " element_name LIMIT 60",
                 (dim_name,),
             ).fetchall()
+            consolidations = conn.execute(
+                "SELECT element_name FROM elements"
+                " WHERE dim_name = ? AND element_type = 'Consolidated'"
+                " ORDER BY CASE WHEN LOWER(element_name) LIKE 'all%'"
+                "               OR LOWER(element_name) LIKE 'total%' THEN 0 ELSE 1 END,"
+                " element_name LIMIT 30",
+                (dim_name,),
+            ).fetchall()
+            all_top_rows = conn.execute(
+                "SELECT e.element_name FROM elements e"
+                " WHERE e.dim_name = ? AND e.element_type = 'Consolidated'"
+                "   AND NOT EXISTS ("
+                "       SELECT 1 FROM element_edges ee"
+                "       WHERE ee.dim_name = e.dim_name AND ee.child_name = e.element_name"
+                "   )"
+                " ORDER BY CASE WHEN LOWER(e.element_name) LIKE 'all%'"
+                "               OR LOWER(e.element_name) LIKE 'total%' THEN 0 ELSE 1 END,"
+                " e.element_name",
+                (dim_name,),
+            ).fetchall()
             attrs = conn.execute(
                 "SELECT attribute_name, attribute_type FROM dim_attributes"
                 " WHERE dim_name = ? ORDER BY attribute_name",
                 (dim_name,),
             ).fetchall()
+
+            # Per-element attribute values (Description / Label / Alias).
+            # The actual SEMANTIC of each element lives here - "EC" is just a
+            # code, but its Description "Local Currency" is what tells us what
+            # the data feed represents. We surface them to the picker / LLM.
+            attr_value_rows = conn.execute(
+                "SELECT element_name, attr_name, attr_value FROM element_attribute_values"
+                " WHERE dim_name = ?",
+                (dim_name,),
+            ).fetchall()
+            element_attr_values: dict[str, dict[str, str]] = {}
+            for ename, aname, aval in attr_value_rows:
+                if not ename or not aname or aval in (None, ""):
+                    continue
+                element_attr_values.setdefault(str(ename), {})[str(aname)] = str(aval)
+            # Also pull simple alias from element_aliases (the principal alias
+            # used for display, which may not appear in element_attribute_values
+            # if the alias attribute name varies).
+            alias_rows = conn.execute(
+                "SELECT element_name, alias_value FROM element_aliases WHERE dim_name = ?",
+                (dim_name,),
+            ).fetchall()
+            for ename, aval in alias_rows:
+                if not ename or aval in (None, ""):
+                    continue
+                element_attr_values.setdefault(str(ename), {}).setdefault("Alias", str(aval))
+
+            # Parent-edge weights so the picker can skip non-aggregating "weight 0"
+            # children (TM1 convention for alternate-view siblings that are in the
+            # hierarchy for display only).
+            edge_rows = conn.execute(
+                "SELECT parent_name, child_name, weight FROM element_edges WHERE dim_name = ?",
+                (dim_name,),
+            ).fetchall()
+            child_weights: dict[str, float] = {}
+            for _parent, child, weight in edge_rows:
+                if child:
+                    try:
+                        w = float(weight) if weight is not None else 1.0
+                    except (TypeError, ValueError):
+                        w = 1.0
+                    # If the same child appears under multiple parents, keep
+                    # the max weight (worst case: at least one parent uses it).
+                    child_weights[str(child)] = max(child_weights.get(str(child), 0.0), w)
+
+            # FULL top consolidations preserved here. Per-query filtering
+            # (drop unrelated category rollups, keep only P&L bottom lines for
+            # P&L questions, etc.) is done by query_intent.prepare_schema_for_query
+            # at request time, so each request sees a focused view tailored to
+            # its intent rather than a one-size-fits-all truncation.
+            # P&L-flavoured names still come first as a sane storage order.
+            all_top_names = [r[0] for r in all_top_rows]
+            pnl_first = [n for n in all_top_names if _looks_like_pnl_bottom_line(n)]
+            non_pnl = [n for n in all_top_names if not _looks_like_pnl_bottom_line(n)]
+            top_names = pnl_first + non_pnl
+            consolidation_names = [r[0] for r in consolidations]
+            element_names = [r[0] for r in elems]
+            default = _pick_default_element(
+                dim_name,
+                all_top_names,
+                consolidation_names,
+                element_names,
+                element_attr_values=element_attr_values,
+                child_weights=child_weights,
+            )
             dimensions.append({
-                "name":        dim_name,
-                "is_measure":  bool(is_measure),
-                "is_time_dim": bool(is_time_dim),
-                "usage":       "",
-                "elements":    [r[0] for r in elems],
-                "attributes":  [{"name": r[0], "type": r[1]} for r in attrs],
+                "name":               dim_name,
+                "is_measure":         bool(is_measure),
+                "is_time_dim":        bool(is_time_dim),
+                "usage":              "",
+                "elements":           element_names,
+                "consolidations":     consolidation_names,
+                "top_consolidations": top_names,
+                "default_element":    default,
+                "attributes":         [{"name": r[0], "type": r[1]} for r in attrs],
+                "element_attr_values": element_attr_values,
+                "child_weights":      child_weights,
             })
 
     return {"cube": cube_name, "dimensions": dimensions}
@@ -623,6 +1054,25 @@ def get_dim_metadata(dim_names: list[str]) -> dict[str, dict]:
         }
         for d in dim_names
     }
+
+
+def get_dim_hierarchy_edges(dim_names: list[str]) -> dict[str, list[tuple[str, str]]]:
+    """Return parent-child edges for dimensions from the schema cache."""
+    if not dim_names:
+        return {}
+
+    placeholders = ",".join("?" * len(dim_names))
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT dim_name, parent_name, child_name FROM element_edges"
+            f" WHERE dim_name IN ({placeholders})",
+            dim_names,
+        ).fetchall()
+
+    result: dict[str, list[tuple[str, str]]] = {d: [] for d in dim_names}
+    for dim_name, parent_name, child_name in rows:
+        result.setdefault(dim_name, []).append((parent_name, child_name))
+    return result
 
 
 # ---------------------------------------------------------------------------

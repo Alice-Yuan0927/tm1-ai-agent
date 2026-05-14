@@ -1,5 +1,6 @@
 const setQ = text => {
   const input = document.getElementById("q");
+  if (!input) return;
   input.value = text;
   autoResizeQuestion();
   updateAnalyzeDisabled();
@@ -26,6 +27,11 @@ function setLoading(on) {
   document.getElementById("sp")?.classList.toggle("hidden", !on);
   const label = document.getElementById("bl");
   if (label) label.textContent = on ? "" : "->";
+  const stopBtn = document.getElementById("stopBtn");
+  if (stopBtn) {
+    stopBtn.classList.toggle("hidden", !on);
+    stopBtn.classList.toggle("inline-flex", on);
+  }
 }
 
 function updatePromptDock() {

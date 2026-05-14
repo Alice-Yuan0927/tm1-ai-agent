@@ -9,8 +9,8 @@ services:
       - ./backend:/app/backend
       - ./frontend:/app/frontend
     environment:
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-opus-4-5}
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_MODEL: ${LLM_MODEL:-}
       TM1_ADDRESS: ${TM1_ADDRESS:-host.docker.internal}
       TM1_PORT: ${TM1_PORT:-9510}
       TM1_USER: ${TM1_USER:-admin}

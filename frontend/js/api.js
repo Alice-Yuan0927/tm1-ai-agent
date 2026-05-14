@@ -41,9 +41,27 @@ async function downloadExcel(msgIdx, srcIdx) {
   }
 }
 
-async function go() {
-  const question = document.getElementById("q").value.trim();
+let _currentAnalysisAbort = null;
+
+function stopCurrentAnalysis() {
+  if (_currentAnalysisAbort) {
+    _currentAnalysisAbort.abort();
+    _currentAnalysisAbort = null;
+  }
+}
+
+async function go(overrideOptions = {}) {
+  const question = overrideOptions.question ?? document.getElementById("q").value.trim();
   if (!question) { document.getElementById("q").focus(); return; }
+
+  const scope = Array.isArray(overrideOptions.selectedCubes)
+    ? overrideOptions.selectedCubes
+    : (typeof getSelectedCubeScope === "function" ? getSelectedCubeScope() : []);
+
+  // Cancel any previous in-flight analysis before starting a new one.
+  stopCurrentAnalysis();
+  const abortController = new AbortController();
+  _currentAnalysisAbort = abortController;
 
   if (!currentChatId) currentChatId = newId();
   setChatMode(true);
@@ -52,7 +70,7 @@ async function go() {
   if (!currentMessages.length) output.innerHTML = "";
   output.insertAdjacentHTML("beforeend", skeleton(question));
   const thinkingTimer = startThinkingProgress();
-  clearQuestionInput();
+  if (!overrideOptions.question) clearQuestionInput();
   scrollToLatest();
 
   let analysisEl = null;
@@ -68,7 +86,9 @@ async function go() {
           question: m.question, analysis: m.analysis,
           chosen_cube: m.chosen_cube, type: m.type || "analysis",
         })),
+        selected_cubes: scope,
       }),
+      signal: abortController.signal,
     });
 
     if (!res.ok) {
@@ -116,7 +136,12 @@ async function go() {
           scrollToLatest();
 
         } else if (event.type === "error") {
-          throw new Error(event.message);
+          const err = new Error(event.message);
+          err.detail = event.detail || "";
+          err.skipped = Array.isArray(event.skipped) ? event.skipped : [];
+          err.scopeFiltered = Boolean(event.scope_filtered);
+          err.scopedCubes = Array.isArray(event.scoped_cubes) ? event.scoped_cubes : [];
+          throw err;
         }
       }
     }
@@ -124,14 +149,66 @@ async function go() {
   } catch (err) {
     output.querySelector('[data-thinking-state="true"]')?.remove();
     output.querySelector("#streaming-msg")?.remove();
+    // User clicked Stop or a newer go() superseded this one → silent unwind.
+    if (err.name === "AbortError" || abortController.signal.aborted) {
+      output.insertAdjacentHTML("beforeend",
+        `<div class="rounded-[10px] border border-cw-borderLow bg-white/60 px-[18px] py-2.5 text-[12px] italic text-cw-muted">Stopped.</div>`
+      );
+      scrollToLatest();
+      return;
+    }
+    const skippedDebug = Array.isArray(err.skipped) && err.skipped.length
+      ? `<details class="mt-3 rounded-lg border border-amber-200 bg-white/60 px-3 py-2 text-[12px] text-amber-800">
+          <summary class="cursor-pointer font-medium">Skipped source debug</summary>
+          <div class="mt-3 space-y-3">
+            ${err.skipped.map((source, index) => _skippedSourceHtml(source, index)).join("")}
+          </div>
+        </details>`
+      : "";
+    const scopePrompt = err.scopeFiltered
+      ? `<div class="mt-3 rounded-lg border border-amber-300 bg-white/70 px-3 py-2.5 text-[12px] text-amber-900">
+          <div class="font-medium">Your selected cubes returned no usable data.</div>
+          ${err.scopedCubes?.length ? `<div class="mt-1 text-[11px] text-amber-700">Scope: ${err.scopedCubes.map(c => esc(c)).join(", ")}</div>` : ""}
+          <div class="mt-2">Want me to expand the search to the rest of the cubes?</div>
+          <div class="mt-2 flex gap-2">
+            <button type="button" id="expandCubeScopeBtn"
+              class="h-7 rounded-md bg-cw-blue px-3 text-[11px] font-semibold text-white shadow-md shadow-cw-blue/20 transition hover:bg-cw-blueHover">
+              Search all cubes
+            </button>
+            <button type="button" id="keepCubeScopeBtn"
+              class="h-7 rounded-md border border-cw-border bg-white px-3 text-[11px] font-medium text-cw-text transition hover:bg-cw-bg">
+              Keep scope, try a different question
+            </button>
+          </div>
+        </div>`
+      : "";
     output.insertAdjacentHTML("beforeend",
-      `<div class="flex items-start gap-2.5 rounded-[10px] border border-red-200 bg-red-50 px-[18px] py-3.5 text-[13px] text-red-700 shadow-soft">
-        <span>Warning:</span><span>${esc(err.message)}</span>
+      `<div class="rounded-[10px] border border-amber-200 bg-amber-50 px-[18px] py-3.5 text-[13px] text-amber-800 shadow-soft">
+        <div class="flex items-start gap-2.5">
+          <i class="fa-solid fa-triangle-exclamation mt-0.5 text-[12px] text-amber-500"></i>
+          <div class="min-w-0 flex-1">
+            <div class="font-semibold text-amber-900">No matching data found</div>
+            <div class="mt-0.5">${esc(err.message)}</div>
+            ${err.detail ? `<details class="mt-2 text-[11px] text-amber-700"><summary class="cursor-pointer font-medium">Technical details</summary><div class="mt-1 whitespace-pre-wrap">${esc(err.detail)}</div></details>` : ""}
+            ${skippedDebug}
+            ${scopePrompt}
+          </div>
+        </div>
       </div>`
     );
+    if (err.scopeFiltered) {
+      document.getElementById("expandCubeScopeBtn")?.addEventListener("click", () => {
+        if (typeof clearCubeScope === "function") clearCubeScope();
+        go({ question, selectedCubes: [] });
+      });
+      document.getElementById("keepCubeScopeBtn")?.addEventListener("click", () => {
+        document.getElementById("q")?.focus();
+      });
+    }
     scrollToLatest();
   } finally {
     window.clearInterval(thinkingTimer);
     setLoading(false);
+    if (_currentAnalysisAbort === abortController) _currentAnalysisAbort = null;
   }
 }

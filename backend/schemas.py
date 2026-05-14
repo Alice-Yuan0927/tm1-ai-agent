@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 class QuestionRequest(BaseModel):
     question: str
     history: list[dict] = Field(default_factory=list)
+    selected_cubes: list[str] = Field(default_factory=list)
 
 
 class EmailRequest(BaseModel):
@@ -19,6 +20,14 @@ class EmailRequest(BaseModel):
 
 
 class TM1ConfigRequest(BaseModel):
+    llm_provider: str = "openai"
+    llm_model: str = ""
+    cube_select_temperature: float = 0.0
+    mdx_temperature: float = 0.0
+    attribute_intent_temperature: float = 0.0
+    semantic_profile_temperature: float = 0.2
+    analysis_temperature: float = 0.2
+    suggestions_temperature: float = 0.4
     address: str
     port: int
     user: str

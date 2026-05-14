@@ -21,30 +21,24 @@ py -m pip install -r backend/requirements.txt
 Create a `.env` file in the project root:
 
 ```env
-ANTHROPIC_API_KEY=sk-ant-xxxxx
-
-# Docker default when TM1 runs on your Windows host:
-TM1_ADDRESS=host.docker.internal
-TM1_PORT=9510
-TM1_USER=admin
-TM1_PASSWORD=
-TM1_NAMESPACE=
-TM1_SSL=false
-TM1_VERIFY=false
-TM1_ASYNC_REQUESTS_MODE=false
+LLM_API_KEY=sk-xxxxx
 
 # Optional email settings through Resend
 RESEND_API_KEY=re_xxxxx
 RESEND_FROM=TM1 AI Analyst <onboarding@resend.dev>
 
-# Model and limits
-CLAUDE_MODEL=claude-opus-4-5
+# Optional startup model default; the app settings UI is the source of truth
+# after you save a model there.
+LLM_MODEL=
+
+# Limits
 MAX_DATA_ROWS=50000
 AI_MAX_ROWS=300
 TRANSPOSE_COLS=30
 MDX_MAX_TOKENS=800
 ANALYSIS_MAX_TOKENS=1800
 CUBE_SELECT_MAX_TOKENS=400
+SEMANTIC_PROFILE_MAX_TOKENS=6000
 
 # Task-specific temperatures
 CUBE_SELECT_TEMPERATURE=0
@@ -55,7 +49,9 @@ ANALYSIS_TEMPERATURE=0.2
 SUGGESTIONS_TEMPERATURE=0.4
 ```
 
-If you run the backend directly on Windows instead of Docker, use `TM1_ADDRESS=localhost` when TM1 is on the same machine.
+TM1 connection settings are saved from the app UI to `backend/runtime/tm1_config.json`.
+Use the gear icon in the top-right to enter address, port, user, namespace, SSL,
+and related settings, then click `Save & sync`.
 
 ## Run With Docker
 
@@ -148,7 +144,7 @@ No manual `.env` edit is needed for normal model switching.
 
 The app can generate a semantic profile for the active TM1 model. This is not a vector database. It is a structured, editable business map that helps the AI interpret terms such as `department`, `staff`, `labor cost`, `occupancy`, or `revenue` against the current model's cubes, dimensions, measures, and attributes.
 
-Use `Generate profile` in the TM1 settings popup after syncing a new model. The backend reads the current schema cache, asks Claude to generate the profile, and saves it under:
+Use `Generate profile` in the TM1 settings popup after syncing a new model. The backend reads the current schema cache, asks OpenAI to generate the profile, and saves it under:
 
 ```text
 backend/model_profiles/<tm1_address>_<port>.json
@@ -190,13 +186,13 @@ Charts are generated from structured preview data:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/health` | Backend status, Claude model, TM1 connection, last sync time |
+| `GET` | `/api/health` | Backend status, LLM model, TM1 connection, last sync time |
 | `GET` | `/api/views` | Cubes visible to the app |
 | `POST` | `/api/sync-schema` | Re-sync TM1 schema cache |
 | `GET` | `/api/tm1-config` | Return current TM1 connection settings |
 | `POST` | `/api/tm1-config` | Save TM1 settings, update runtime config, and sync schema |
 | `POST` | `/api/model-profile/generate` | Generate semantic profile for the active model |
-| `GET` | `/api/suggestions` | Claude-generated homepage suggested questions |
+| `GET` | `/api/suggestions` | AI-generated homepage suggested questions |
 | `POST` | `/api/analyze` | SSE stream for the full analysis pipeline |
 | `POST` | `/api/export-excel` | Generate and download an Excel workbook |
 | `POST` | `/api/send-email` | Send analysis result by email via Resend |
@@ -206,7 +202,7 @@ Charts are generated from structured preview data:
 ```text
 backend/
   ai/
-    service.py              # Claude calls: cube selection, MDX, profile generation, analysis
+    service.py              # OpenAI calls: cube selection, MDX, profile generation, analysis
     rag.py                  # SQLite FTS5 query history for MDX examples
   model_profiles/
     default.json            # Generated semantic profile fallback
@@ -247,13 +243,13 @@ frontend/
 
 2. **Semantic profile**: Optional model-specific profile maps natural business terms to schema concepts. This profile is generated from the schema cache and can be edited later.
 
-3. **Cube selection**: Claude receives the question, cube metadata, compact schema context, and the active semantic profile. It selects primary and fallback cubes.
+3. **Cube selection**: The model receives the question, cube metadata, compact schema context, and the active semantic profile. It selects primary and fallback cubes.
 
-4. **MDX generation**: Claude generates MDX for each selected cube using the cube schema, previous conversation context, and similar successful queries.
+4. **MDX generation**: The model generates MDX for each selected cube using the cube schema, previous conversation context, and similar successful queries.
 
 5. **Execution and preview**: TM1py executes MDX, then the backend pivots results into structured rows with filters, row dimensions, columns, alias attributes, and chart metadata.
 
-6. **Analysis**: Claude receives compact pivoted data, not raw duplicated cell rows, and streams a concise financial analysis back to the UI.
+6. **Analysis**: The model receives compact pivoted data, not raw duplicated cell rows, and streams a concise financial analysis back to the UI.
 
 7. **Output**: The frontend renders tables, charts, Excel export buttons, email sharing, and chat history.
 
@@ -273,3 +269,6 @@ After editing `.env` manually, restart Docker:
 ```powershell
 docker compose up -d --build
 ```
+
+
+
