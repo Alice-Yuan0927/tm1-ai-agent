@@ -1,27 +1,67 @@
 import json
+import logging
 import re
 from collections.abc import Iterator
 from datetime import date
 
-_TIME_PERIOD_RE = re.compile(
-    r"""
-    \b(?:
-        jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|
-        jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|
-        oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|
-        q[1-4]|h[12]|
-        f?ytd|[fq]?mtd|qtd|
-        full[\s\-]?year|whole[\s\-]?year|all[\s\-]?year|
-        year[\s\-]to[\s\-]date|all[\s\-]months?|full[\s\-]period
-    )\b
-    """,
-    re.VERBOSE | re.IGNORECASE,
-)
+from .tm1_lexicon import SCENARIO_ALIASES, STATEMENT_PATTERN, TIME_PERIOD_PATTERN
+
+_log = logging.getLogger(__name__)
+
+# ── Conversation window constants ─────────────────────────────────────────────
+_HISTORY_WINDOW = 4       # number of prior turns included in conversation context
+_HISTORY_ANALYSIS_MAX = 800  # max characters kept per prior analysis turn
+
+# ── Shared MDX hard rules (rules 2-24, cube-name-independent) ─────────────────
+# Rule 1 (FROM [{cube_name}]) and the final reply rule are injected per prompt
+# because they reference the runtime cube name.
+_MDX_HARD_RULES = """\
+2. WHERE accepts ONLY single members [Dim].[Dim].[Element]
+   - never .Members, never {set expressions}, never .Children, never Descendants(...)
+3. A dimension must appear on exactly ONE of: COLUMNS, ROWS, or WHERE - never in two places, never omitted
+4. ALL dimensions not on COLUMNS or ROWS MUST appear in WHERE - include every remaining dimension with one element
+5. A 4-digit year (e.g. 2025) ALWAYS goes in the dimension whose name contains "Year" or "Period" - NEVER Employee, Scenario, etc.
+6. For unfiltered WHERE dimensions, choose a default from the model profile when available; otherwise use that dimension's "default_element". Do not choose an arbitrary leaf when default_element exists.
+7. Put dimensions needed for the answer on COLUMNS or ROWS; put all remaining dimensions in WHERE.
+8. PREFER set functions over enumeration when the axis would list more than 5 sibling elements that share a parent:
+   - All immediate children of a parent: [Dim].[Dim].[Parent].Children
+   - All leaf descendants under a parent: Descendants([Dim].[Dim].[Parent], 99, LEAVES)
+   - Descendants at one level: Descendants([Dim].[Dim].[Parent], 1)
+   The Parent MUST come from the dimension's "consolidations" or "top_consolidations" list.
+9. NEVER call .Children, Descendants, or .Members on a leaf element (an element not in "consolidations").
+10. For full financial statements (P&L, income statement, balance sheet, cash flow) on the Account/Line Item dimension, use
+    Descendants([Dim].[Dim].[TopConsolidation], 99, LEAVES) with a name from "top_consolidations" -
+    do NOT enumerate every line item by hand.
+11. For "by month" on a Period/Time dimension that has a yearly parent: prefer [Period].[Period].[<year>].Children
+    over enumerating 12 month names.
+12. Avoid [Dim].[Dim].Members unless the user explicitly asks for every element in that dimension.
+13. For dimensions with mixed hierarchy levels, prefer either a set function rooted at a clean parent or an explicit small list -
+    do NOT mix rollups and leaves on the same axis.
+14. When the question names one specific non-time element, use that element in WHERE unless the user asks to compare it against siblings.
+15. For financial statement requests (P&L, profit and loss statement, income statement), show statement line items by putting the Account/Line Item/P&L account dimension on ROWS. Do not hide the account dimension in WHERE as a single total unless the user asked for a single total.
+16. Single ROWS dimension: {<set-function-or-enumeration>} ON ROWS
+17. Multiple ROWS dimensions: {setA} * {setB} ON ROWS
+    - use the * operator for cross product; NEVER use CrossJoin() function (causes rte 45 in TM1)
+18. Use ONLY element names from the lists above; match case-insensitively to the exact entry
+19. CRITICAL: verify which dimension each element belongs to before writing it - wrong dimension = hard error
+20. TM1 element display names and other attributes (e.g. "Employee Name", "Grade") are stored as
+    dimension attributes - do NOT query a different cube to look up names or labels
+21. "Employee no.2", "employee #2", or "employee 2" means the Employee element named exactly "2";
+    do not substitute a nearby visible ID like "10" and do not use the Full Name attribute as the MDX element
+22. Time dimensions are semantic, not generic rollups: do not choose "All YTD", "All FYTD",
+    "All YTG", "All FYTG", "All QTD", "All MTD", or similar cumulative elements unless
+    the user explicitly asks for YTD/FYTD/YTG/QTD/MTD/full-year/all-periods, or the model profile default explicitly names that element.
+23. If the user gives a specific month, use that exact month element. If no month is
+    specified and the model profile provides a Month default, use that default.
+24. Concrete member grounding: when the user names a specific member/entity/category,
+    use ONLY the matching member from "Grounded member candidates" below. If a
+    concrete member is not present there, use a default_element or ask for repair
+    through validation; do not invent or approximate member names."""
 
 
 def _has_time_period(text: str) -> bool:
     """Return True if text already specifies a month, quarter, or period."""
-    return bool(_TIME_PERIOD_RE.search(text))
+    return bool(TIME_PERIOD_PATTERN.search(text))
 
 try:
     from openai import OpenAI
@@ -49,13 +89,21 @@ from .prompt_rules import GENERAL_AGENT_CONTRACT
 
 # ── OpenAI ────────────────────────────────────────────────────────────────────
 
+_openai_client_instance: "OpenAI | None" = None
+_openai_client_api_key: str = ""
+
+
 def _openai_client() -> OpenAI:
+    global _openai_client_instance, _openai_client_api_key
     api_key = get_llm_api_key()
     if not api_key:
         raise RuntimeError("LLM_API_KEY environment variable not set")
     if OpenAI is None:
         raise RuntimeError("openai package is not installed")
-    return OpenAI(api_key=api_key)
+    if _openai_client_instance is None or _openai_client_api_key != api_key:
+        _openai_client_instance = OpenAI(api_key=api_key)
+        _openai_client_api_key = api_key
+    return _openai_client_instance
 
 
 def _needs_openai_min_token_budget(model: str) -> bool:
@@ -129,19 +177,21 @@ def _anthropic_client():
     return _anthropic_sdk.Anthropic(api_key=api_key)
 
 
-def _complete_text_anthropic(prompt: str, *, max_tokens: int) -> str:
+def _complete_text_anthropic(prompt: str, *, max_tokens: int, temperature: float) -> str:
     response = _anthropic_client().messages.create(
         model=get_llm_model(),
         max_tokens=max_tokens,
+        temperature=temperature,
         messages=[{"role": "user", "content": prompt}],
     )
     return "".join(b.text for b in response.content if b.type == "text").strip()
 
 
-def _stream_text_anthropic(prompt: str, *, max_tokens: int) -> Iterator[str]:
+def _stream_text_anthropic(prompt: str, *, max_tokens: int, temperature: float) -> Iterator[str]:
     with _anthropic_client().messages.stream(
         model=get_llm_model(),
         max_tokens=max_tokens,
+        temperature=temperature,
         messages=[{"role": "user", "content": prompt}],
     ) as stream:
         yield from stream.text_stream
@@ -152,14 +202,14 @@ def _stream_text_anthropic(prompt: str, *, max_tokens: int) -> Iterator[str]:
 def _complete_text(prompt: str, *, max_tokens: int, temperature: float) -> str:
     provider = get_llm_provider()
     if provider == "anthropic":
-        return _complete_text_anthropic(prompt, max_tokens=max_tokens)
+        return _complete_text_anthropic(prompt, max_tokens=max_tokens, temperature=temperature)
     return _complete_text_openai(prompt, max_tokens=max_tokens, temperature=temperature)
 
 
 def _stream_text(prompt: str, *, max_tokens: int, temperature: float) -> Iterator[str]:
     provider = get_llm_provider()
     if provider == "anthropic":
-        yield from _stream_text_anthropic(prompt, max_tokens=max_tokens)
+        yield from _stream_text_anthropic(prompt, max_tokens=max_tokens, temperature=temperature)
     else:
         yield from _stream_text_openai(prompt, max_tokens=max_tokens, temperature=temperature)
 
@@ -169,12 +219,12 @@ def _conversation_context(history: list[dict] | None) -> str:
         return "No previous messages."
 
     items = []
-    for message in history[-4:]:
+    for message in history[-_HISTORY_WINDOW:]:
         question = str(message.get("question", "")).strip()
         analysis = str(message.get("analysis", "")).strip()
         cube = str(message.get("chosen_cube", "")).strip()
-        if analysis:
-            analysis = analysis[:800]
+        if analysis and len(analysis) > _HISTORY_ANALYSIS_MAX:
+            analysis = analysis[:_HISTORY_ANALYSIS_MAX] + "..."
         cube_tag = f" [cube: {cube}]" if cube else ""
         items.append(f"User:{cube_tag} {question}\nAssistant: {analysis}")
     return "\n\n".join(items)
@@ -242,8 +292,7 @@ def validate_generated_mdx(mdx: str, cube_name: str) -> None:
 
 
 _STATEMENT_QUESTION_RE = re.compile(
-    r"\b(p\s*&\s*l|p\s*and\s*l|pnl|profit\s+and\s+loss|income\s+statement|"
-    r"balance\s+sheet|cash\s+flow|trial\s+balance)\b",
+    rf"(?:{STATEMENT_PATTERN.pattern}|balance\s+sheet|cash\s+flow|trial\s+balance)",
     re.IGNORECASE,
 )
 
@@ -314,10 +363,15 @@ def generate_cube_mdx(
     history: list[dict] | None = None,
     similar_queries: list[dict] | None = None,
     model_profile: dict | None = None,
+    grounded_members: list[dict] | None = None,
 ) -> str:
     """Generate an MDX SELECT statement for a cube using the cube schema and user question."""
     cube_name = cube_schema.get("cube", "")
-    dims_json = json.dumps(cube_schema.get("dimensions", []), indent=2, ensure_ascii=False)
+    dims_json = json.dumps(
+        _schema_dimensions_for_prompt(cube_schema.get("dimensions", []), grounded_members),
+        indent=2,
+        ensure_ascii=False,
+    )
 
     # Few-shot examples from RAG history
     examples_section = ""
@@ -336,6 +390,7 @@ def generate_cube_mdx(
 
     statement_directive = _line_item_directive(question, cube_schema)
     defaults_directive = _profile_defaults_directive(cube_schema, model_profile)
+    grounded_section = _grounded_members_section(grounded_members)
 
     prompt = f"""You are an expert TM1 / IBM Planning Analytics MDX query writer.
 
@@ -345,7 +400,7 @@ Cube: {cube_name}
 
 Dimensions and their available elements:
 {dims_json}
-{statement_directive}{defaults_directive}{examples_section}
+{grounded_section}{statement_directive}{defaults_directive}{examples_section}
 {profile_section}
 User question: "{question}"
 
@@ -377,44 +432,8 @@ Each dimension in the schema above lists three element groups:
 
 Hard rules for valid TM1 MDX:
 1. FROM [{cube_name}] must come immediately after the axes - always BEFORE WHERE
-2. WHERE accepts ONLY single members [Dim].[Dim].[Element]
-   - never .Members, never {{set expressions}}, never .Children, never Descendants(...)
-3. A dimension must appear on exactly ONE of: COLUMNS, ROWS, or WHERE - never in two places, never omitted
-4. ALL dimensions not on COLUMNS or ROWS MUST appear in WHERE - include every remaining dimension with one element
-5. A 4-digit year (e.g. 2025) ALWAYS goes in the dimension whose name contains "Year" or "Period" - NEVER Employee, Scenario, etc.
-6. For unfiltered WHERE dimensions, choose a default from the model profile when available; otherwise use that dimension's "default_element". Do not choose an arbitrary leaf when default_element exists.
-7. Put dimensions needed for the answer on COLUMNS or ROWS; put all remaining dimensions in WHERE.
-8. PREFER set functions over enumeration when the axis would list more than 5 sibling elements that share a parent:
-   - All immediate children of a parent: [Dim].[Dim].[Parent].Children
-   - All leaf descendants under a parent: Descendants([Dim].[Dim].[Parent], 99, LEAVES)
-   - Descendants at one level: Descendants([Dim].[Dim].[Parent], 1)
-   The Parent MUST come from the dimension's "consolidations" or "top_consolidations" list.
-9. NEVER call .Children, Descendants, or .Members on a leaf element (an element not in "consolidations").
-10. For full financial statements (P&L, income statement, balance sheet, cash flow) on the Account/Line Item dimension, use
-    Descendants([Dim].[Dim].[TopConsolidation], 99, LEAVES) with a name from "top_consolidations" -
-    do NOT enumerate every line item by hand.
-11. For "by month" on a Period/Time dimension that has a yearly parent: prefer [Period].[Period].[<year>].Children
-    over enumerating 12 month names.
-12. Avoid [Dim].[Dim].Members unless the user explicitly asks for every element in that dimension.
-13. For dimensions with mixed hierarchy levels, prefer either a set function rooted at a clean parent or an explicit small list -
-    do NOT mix rollups and leaves on the same axis.
-14. When the question names one specific non-time element, use that element in WHERE unless the user asks to compare it against siblings.
-15. For financial statement requests (P&L, profit and loss statement, income statement), show statement line items by putting the Account/Line Item/P&L account dimension on ROWS. Do not hide the account dimension in WHERE as a single total unless the user asked for a single total.
-16. Single ROWS dimension: {{<set-function-or-enumeration>}} ON ROWS
-17. Multiple ROWS dimensions: {{<setA>}} * {{<setB>}} ON ROWS
-    - use the * operator for cross product; NEVER use CrossJoin() function (causes rte 45 in TM1)
-18. Use ONLY element names from the lists above; match case-insensitively to the exact entry
-19. CRITICAL: verify which dimension each element belongs to before writing it - wrong dimension = hard error
-20. TM1 element display names and other attributes (e.g. "Employee Name", "Grade") are stored as
-    dimension attributes - do NOT query a different cube to look up names or labels
-21. "Employee no.2", "employee #2", or "employee 2" means the Employee element named exactly "2";
-    do not substitute a nearby visible ID like "10" and do not use the Full Name attribute as the MDX element
-22. Time dimensions are semantic, not generic rollups: do not choose "All YTD", "All FYTD",
-    "All YTG", "All FYTG", "All QTD", "All MTD", or similar cumulative elements unless
-    the user explicitly asks for YTD/FYTD/YTG/QTD/MTD/full-year/all-periods, or the model profile default explicitly names that element.
-23. If the user gives a specific month, use that exact month element. If no month is
-    specified and the model profile provides a Month default, use that default.
-24. Reply with ONLY the raw MDX - no markdown, no comments, nothing else"""
+{_MDX_HARD_RULES}
+25. Reply with ONLY the raw MDX - no markdown, no comments, nothing else"""
 
     try:
         mdx = _complete_text(
@@ -424,8 +443,10 @@ Hard rules for valid TM1 MDX:
         )
         mdx = normalize_mdx(mdx, question, model_profile)
         validate_generated_mdx(mdx, cube_name)
-        print(f"[MDX] {cube_schema.get('cube')} | {mdx}", flush=True)
+        _log.info("[MDX] %s | %s", cube_schema.get("cube"), mdx)
         return mdx
+    except RuntimeError:
+        raise
     except Exception as exc:
         raise RuntimeError(f"MDX generation error: {exc}") from exc
 
@@ -438,10 +459,15 @@ def repair_cube_mdx(
     history: list[dict] | None = None,
     similar_queries: list[dict] | None = None,
     model_profile: dict | None = None,
+    grounded_members: list[dict] | None = None,
 ) -> str:
     """Repair an MDX statement that TM1 rejected."""
     cube_name = cube_schema.get("cube", "")
-    dims_json = json.dumps(cube_schema.get("dimensions", []), indent=2, ensure_ascii=False)
+    dims_json = json.dumps(
+        _schema_dimensions_for_prompt(cube_schema.get("dimensions", []), grounded_members),
+        indent=2,
+        ensure_ascii=False,
+    )
 
     examples_section = ""
     if similar_queries:
@@ -459,6 +485,7 @@ def repair_cube_mdx(
 
     statement_directive = _line_item_directive(question, cube_schema)
     defaults_directive = _profile_defaults_directive(cube_schema, model_profile)
+    grounded_section = _grounded_members_section(grounded_members)
 
     prompt = f"""You are an expert TM1 / IBM Planning Analytics MDX debugger.
 
@@ -468,7 +495,7 @@ Cube: {cube_name}
 
 Dimensions and available elements:
 {dims_json}
-{statement_directive}{defaults_directive}{examples_section}
+{grounded_section}{statement_directive}{defaults_directive}{examples_section}
 {profile_section}
 User question: "{question}"
 
@@ -483,22 +510,11 @@ TM1 error:
 
 Return a corrected MDX SELECT statement for the same question.
 
-Hard rules:
-1. Use ONLY cube [{cube_name}]
-2. Use ONLY dimensions and elements listed in the schema above
-3. A dimension must appear on exactly ONE of COLUMNS, ROWS, or WHERE
-4. WHERE accepts ONLY single members [Dim].[Dim].[Element], never sets or .Members
-5. Put 4-digit years only in a Year/Period/Time dimension
-6. For unfiltered dimensions, use model profile defaults where available; otherwise use that dimension's default_element. Do not choose an arbitrary leaf when default_element exists
-7. PREFER set functions over enumeration on COLUMNS/ROWS when an axis would list >5 siblings under one parent:
-   - [Dim].[Dim].[Parent].Children for immediate children
-   - Descendants([Dim].[Dim].[Parent], 99, LEAVES) for all leaves under a parent
-   The Parent MUST be in that dimension's "consolidations" or "top_consolidations" list. Never call set functions on a leaf.
-8. For full P&L / income statement / balance sheet rows, use Descendants on a name from "top_consolidations" - do NOT enumerate line items by hand.
-9. Avoid [Dim].[Dim].Members when the previous result mixed rollups and leaf elements on the same axis; rewrite that axis with a set function rooted at a clean parent or an explicit small list
-10. Preserve any current-question narrowing: if the question names one specific measure/account/category/benefit/etc., keep that element filtered instead of expanding siblings
-11. If the error says an element cannot be found, replace it with the closest exact element from the correct dimension
-12. Reply with ONLY raw MDX, no markdown, no comments"""
+Hard rules for valid TM1 MDX:
+1. FROM [{cube_name}] must come immediately after the axes - always BEFORE WHERE. Use ONLY cube [{cube_name}].
+{_MDX_HARD_RULES}
+25. If the error says an element cannot be found, replace it with the closest exact element from the correct dimension.
+26. Reply with ONLY the raw MDX - no markdown, no comments, nothing else"""
 
     try:
         mdx = _complete_text(
@@ -508,10 +524,72 @@ Hard rules:
         )
         mdx = normalize_mdx(mdx, question, model_profile)
         validate_generated_mdx(mdx, cube_name)
-        print(f"[MDX repair] {cube_name} | {mdx}", flush=True)
+        _log.info("[MDX repair] %s | %s", cube_name, mdx)
         return mdx
+    except RuntimeError:
+        raise
     except Exception as exc:
         raise RuntimeError(f"MDX repair error: {exc}") from exc
+
+
+def _grounded_members_section(grounded_members: list[dict] | None) -> str:
+    if not grounded_members:
+        return ""
+    compact = [
+        {
+            "dimension": item.get("dimension", ""),
+            "element": item.get("element", ""),
+            "unique_name": item.get("unique_name", ""),
+            "matched_text": item.get("matched_text", ""),
+            "matched_by": item.get("matched_by", ""),
+        }
+        for item in grounded_members[:40]
+    ]
+    return (
+        "\nGrounded member candidates from the current question "
+        "(HARD RULE: use these exact unique_name values for concrete members; "
+        "do not invent member names):\n"
+        f"{json.dumps(compact, indent=2, ensure_ascii=False)}\n"
+    )
+
+
+def _schema_dimensions_for_prompt(
+    dimensions: list[dict],
+    grounded_members: list[dict] | None = None,
+) -> list[dict]:
+    grounded_by_dim: dict[str, set[str]] = {}
+    for item in grounded_members or []:
+        dim = str(item.get("dimension", ""))
+        elem = str(item.get("element", ""))
+        if dim and elem:
+            grounded_by_dim.setdefault(dim, set()).add(elem)
+
+    prompt_dims: list[dict] = []
+    for dim in dimensions or []:
+        dim_name = str(dim.get("name", ""))
+        item = dict(dim)
+        item.pop("child_weights", None)
+
+        keep_elements = set(str(e) for e in item.get("elements", []) or [])
+        keep_elements.update(str(e) for e in item.get("consolidations", []) or [])
+        keep_elements.update(str(e) for e in item.get("top_consolidations", []) or [])
+        if item.get("default_element"):
+            keep_elements.add(str(item["default_element"]))
+        keep_elements.update(grounded_by_dim.get(dim_name, set()))
+
+        attr_values = item.get("element_attr_values") or {}
+        if isinstance(attr_values, dict):
+            filtered_attrs = {
+                str(element): values
+                for element, values in attr_values.items()
+                if str(element) in keep_elements
+            }
+            if filtered_attrs:
+                item["element_attr_values"] = filtered_attrs
+            else:
+                item.pop("element_attr_values", None)
+        prompt_dims.append(item)
+    return prompt_dims
 
 
 def detect_attribute_intent(
@@ -557,10 +635,7 @@ or
         raw = re.sub(r"```json|```", "", raw).strip()
         parsed = json.loads(raw)
         if parsed.get("intent") and parsed.get("dim_name") and parsed.get("attr_name"):
-            print(
-                f"[attr-intent] dim={parsed['dim_name']} attr={parsed['attr_name']}",
-                flush=True,
-            )
+            _log.info("[attr-intent] dim=%s attr=%s", parsed["dim_name"], parsed["attr_name"])
             return {"dim_name": str(parsed["dim_name"]), "attr_name": str(parsed["attr_name"])}
     except Exception:
         pass
@@ -789,13 +864,7 @@ def find_clarifications(
     if not has_year and not has_yearly_breakdown and not has_current_period_hint:
         missing.append("year")
 
-    scenario_terms = (
-        "actual", "actuals", "act",
-        "budget", "bud", "bdg",
-        "forecast", "fc", "fcst", "fcast",
-        "plan", "planned", "estimate", "target",
-    )
-    has_scenario = any(re.search(rf"\b{re.escape(term)}\b", combined) for term in scenario_terms)
+    has_scenario = any(re.search(rf"\b{re.escape(term)}\b", combined) for term in SCENARIO_ALIASES)
     if not has_scenario:
         missing.append("scenario")
 
@@ -898,7 +967,7 @@ def find_schema_clarification(
     matches = find_question_element_matches(question)
     if matches:
         sample = ", ".join(f"{m[0]} -> {m[1]}.{m[2]}" for m in matches[:5])
-        print(f"[clarify-skip] question references real elements: {sample}", flush=True)
+        _log.info("[clarify-skip] question references real elements: %s", sample)
         return None
     cube_context = json.dumps(cubes[:12], indent=2, ensure_ascii=False)
     profile_section = (

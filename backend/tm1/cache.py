@@ -364,16 +364,56 @@ def init_schema_db() -> None:
                 attr_value   TEXT NOT NULL,
                 PRIMARY KEY (dim_name, element_name, attr_name)
             );
+
+            CREATE VIRTUAL TABLE IF NOT EXISTS member_search USING fts5(
+                dim_name UNINDEXED,
+                element_name UNINDEXED,
+                searchable_text,
+                tokenize = 'unicode61'
+            );
         """)
         # Migration: add new columns to existing databases without resetting
         _add_col_if_missing(conn, "elements",    "element_type", "TEXT NOT NULL DEFAULT 'Numeric'")
         _add_col_if_missing(conn, "dim_in_cube", "is_time_dim",  "INTEGER DEFAULT 0")
+        _backfill_member_search_if_empty(conn)
+
+
+_ALLOWED_MIGRATION_TABLES = frozenset(
+    {"cubes", "dim_in_cube", "elements", "element_edges",
+     "dim_attributes", "element_aliases", "element_attribute_values", "member_search"}
+)
 
 
 def _add_col_if_missing(conn: sqlite3.Connection, table: str, col: str, defn: str) -> None:
+    if table not in _ALLOWED_MIGRATION_TABLES:
+        raise ValueError(f"_add_col_if_missing: unknown table '{table}'")
     existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
     if col not in existing:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {defn}")
+
+
+def _backfill_member_search_if_empty(conn: sqlite3.Connection) -> None:
+    member_rows = conn.execute("SELECT COUNT(*) FROM member_search").fetchone()[0]
+    element_rows = conn.execute("SELECT COUNT(*) FROM elements").fetchone()[0]
+    if member_rows or not element_rows:
+        return
+    rows = conn.execute(
+        "SELECT e.dim_name, e.element_name,"
+        "       e.element_name || ' ' || COALESCE(ea.alias_value, '') || ' ' ||"
+        "       COALESCE(GROUP_CONCAT(eav.attr_name || ' ' || eav.attr_value, ' '), '')"
+        " FROM elements e"
+        " LEFT JOIN element_aliases ea"
+        "   ON ea.dim_name = e.dim_name AND ea.element_name = e.element_name"
+        " LEFT JOIN element_attribute_values eav"
+        "   ON eav.dim_name = e.dim_name AND eav.element_name = e.element_name"
+        " GROUP BY e.dim_name, e.element_name, ea.alias_value"
+    ).fetchall()
+    if rows:
+        conn.executemany(
+            "INSERT INTO member_search(dim_name, element_name, searchable_text)"
+            " VALUES (?, ?, ?)",
+            rows,
+        )
 
 
 def is_empty() -> bool:
@@ -499,6 +539,7 @@ def sync_schema() -> dict:
     # Write atomically to SQLite
     with _connect() as conn:
         conn.execute("DELETE FROM element_attribute_values")
+        conn.execute("DELETE FROM member_search")
         conn.execute("DELETE FROM element_aliases")
         conn.execute("DELETE FROM element_edges")
         conn.execute("DELETE FROM dim_attributes")
@@ -574,6 +615,26 @@ def sync_schema() -> dict:
                     )
                     total_attr_vals += len(elem_vals)
 
+        member_docs: list[tuple[str, str, str]] = []
+        for dim_name, pairs in dim_elements.items():
+            attr_by_elem: dict[str, list[str]] = {}
+            for attr_name, elem_vals in dim_all_attr_values.get(dim_name, {}).items():
+                for elem, val in elem_vals.items():
+                    attr_by_elem.setdefault(elem, []).append(f"{attr_name} {val}")
+            alias_map = dim_alias_values.get(dim_name, {})
+            for elem, _etype in pairs:
+                parts = [str(elem)]
+                if alias_map.get(elem):
+                    parts.append(str(alias_map[elem]))
+                parts.extend(attr_by_elem.get(elem, []))
+                member_docs.append((dim_name, elem, " ".join(parts)))
+        if member_docs:
+            conn.executemany(
+                "INSERT INTO member_search(dim_name, element_name, searchable_text)"
+                " VALUES (?, ?, ?)",
+                member_docs,
+            )
+
     return {
         "cubes": len(cube_dims),
         "dims": len(unique_dims),
@@ -612,6 +673,31 @@ def lookup_element_dim(element_name: str, candidate_dims: list[str] | None = Non
                 (element_name,),
             ).fetchone()
     return row[0] if row else None
+
+
+def element_exists(dim_name: str, element_name: str) -> bool:
+    """Return True when an element exists in the cached dimension."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM elements"
+            " WHERE dim_name = ? AND LOWER(element_name) = LOWER(?)"
+            " LIMIT 1",
+            (dim_name, element_name),
+        ).fetchone()
+    return bool(row)
+
+
+def is_consolidated_element(dim_name: str, element_name: str) -> bool:
+    """Return True when an element is cached as a consolidated element."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM elements"
+            " WHERE dim_name = ? AND LOWER(element_name) = LOWER(?)"
+            "   AND element_type = 'Consolidated'"
+            " LIMIT 1",
+            (dim_name, element_name),
+        ).fetchone()
+    return bool(row)
 
 
 _ELEMENT_NORM_RE = re.compile(r"[^a-z0-9]+")
@@ -653,36 +739,229 @@ def find_question_element_matches(question: str, *, max_phrase_words: int = 4, m
     Returns a list of (matched_element, dim_name, element_name). Used to suppress
     premature schema-clarification questions: if the user typed a real element,
     the AI should not pretend it doesn't exist.
+
+    Strategy: build all n-gram phrases from the normalised question text, then
+    look up only those phrases in SQLite (using the idx_elem_lower index) instead
+    of fetching the entire elements table and filtering in Python.
     """
     text = (question or "").strip()
     if not text:
         return []
     norm_question = " " + _normalise_element_token(text) + " "
+    q_tokens = norm_question.split()
+
+    # Build every n-gram (1..max_phrase_words) from the normalised question.
+    # These are the only strings that could ever match via _normalise_element_token.
+    candidate_norms: list[str] = []
+    seen_norms: set[str] = set()
+    for i in range(len(q_tokens)):
+        for n in range(1, max_phrase_words + 1):
+            if i + n > len(q_tokens):
+                break
+            phrase = " ".join(q_tokens[i : i + n])
+            if phrase not in seen_norms and len(phrase.replace(" ", "")) >= min_token_len:
+                seen_norms.add(phrase)
+                candidate_norms.append(phrase)
+
+    if not candidate_norms:
+        return []
+
+    # SQLite approximation of _normalise_element_token: lower-case and collapse
+    # the most common punctuation to spaces. This covers the vast majority of
+    # real TM1 element names (dashes, underscores, slashes, dots, brackets).
+    # The exact Python check below catches any edge cases the SQL misses.
+    norm_sql = (
+        "TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE("
+        "LOWER(element_name),"
+        "'-',' '),'_',' '),'/',' '),'.',' '),'(',' '),')',' '))"
+    )
+    placeholders = ",".join("?" * len(candidate_norms))
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT dim_name, element_name FROM elements"
-            " WHERE LENGTH(element_name) >= 2"
+            f"SELECT dim_name, element_name FROM elements"
+            f" WHERE LENGTH(element_name) >= 2"
+            f"   AND {norm_sql} IN ({placeholders})",
+            candidate_norms,
         ).fetchall()
+
     results: list[tuple[str, str, str]] = []
     seen: set[tuple[str, str]] = set()
     for dim_name, element_name in rows:
-        if not element_name:
-            continue
         token = str(element_name).strip()
-        if len(token.split()) > max_phrase_words:
+        if not token or len(token.split()) > max_phrase_words:
             continue
         if not _is_strong_element_token(token):
             continue
         needle = _normalise_element_token(token)
         if len(needle.replace(" ", "")) < min_token_len:
             continue
-        if f" {needle} " in norm_question:
-            key = (dim_name, element_name)
-            if key in seen:
-                continue
+        if f" {needle} " not in norm_question:
+            continue
+        key = (dim_name, element_name)
+        if key not in seen:
             seen.add(key)
             results.append((token, dim_name, element_name))
     return results
+
+
+def resolve_question_members(
+    question: str,
+    candidate_dims: list[str] | None = None,
+    *,
+    max_per_dim: int = 5,
+    max_total: int = 40,
+) -> list[dict[str, str | int]]:
+    """
+    Return question-scoped member candidates from the schema cache.
+
+    This is the grounding layer for MDX generation: the LLM should use these
+    candidates for concrete member references instead of inventing element
+    names from natural language. Search is deliberately lexical and bounded:
+    exact/normalised element names, aliases, and string attribute values are
+    matched only inside the selected cube's dimensions.
+    """
+    text = (question or "").strip()
+    if not text:
+        return []
+    question_norm = _normalise_element_token(text)
+    if not question_norm:
+        return []
+    question_padded = f" {question_norm} "
+
+    dim_filter = ""
+    params: list[object] = []
+    if candidate_dims:
+        placeholders = ",".join("?" * len(candidate_dims))
+        dim_filter = f" AND ms.dim_name IN ({placeholders})"
+        params.extend(candidate_dims)
+
+    fts_query = _member_fts_query(text)
+    if not fts_query:
+        return []
+
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT e.dim_name, e.element_name, e.element_type,"
+            "       ea.alias_value,"
+            "       GROUP_CONCAT(eav.attr_name || '=' || eav.attr_value, char(31))"
+            " FROM member_search ms"
+            " JOIN elements e"
+            "   ON e.dim_name = ms.dim_name AND e.element_name = ms.element_name"
+            " LEFT JOIN element_aliases ea"
+            "   ON ea.dim_name = e.dim_name AND ea.element_name = e.element_name"
+            " LEFT JOIN element_attribute_values eav"
+            "   ON eav.dim_name = e.dim_name AND eav.element_name = e.element_name"
+            f" WHERE member_search MATCH ?{dim_filter}"
+            " GROUP BY e.dim_name, e.element_name, e.element_type, ea.alias_value",
+            [fts_query, *params],
+        ).fetchall()
+
+    ranked: list[tuple[int, int, dict[str, str | int]]] = []
+    for dim_name, element_name, element_type, alias_value, attr_blob in rows:
+        element = str(element_name or "").strip()
+        if not element:
+            continue
+        matches = _member_match_signals(
+            question_padded,
+            element,
+            str(alias_value or ""),
+            str(attr_blob or ""),
+        )
+        if not matches:
+            continue
+        best_score, matched_text, matched_by = matches
+        specificity = len(_normalise_element_token(matched_text).replace(" ", ""))
+        ranked.append((
+            best_score,
+            specificity,
+            {
+                "dimension": str(dim_name),
+                "element": element,
+                "unique_name": f"[{dim_name}].[{dim_name}].[{element}]",
+                "element_type": str(element_type or "Numeric"),
+                "matched_text": matched_text,
+                "matched_by": matched_by,
+                "score": best_score,
+            },
+        ))
+
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    results: list[dict[str, str | int]] = []
+    per_dim: dict[str, int] = {}
+    seen: set[tuple[str, str]] = set()
+    for _score, _specificity, candidate in ranked:
+        key = (str(candidate["dimension"]), str(candidate["element"]))
+        if key in seen:
+            continue
+        dim_count = per_dim.get(key[0], 0)
+        if dim_count >= max_per_dim:
+            continue
+        seen.add(key)
+        per_dim[key[0]] = dim_count + 1
+        results.append(candidate)
+        if len(results) >= max_total:
+            break
+    return results
+
+
+def _member_match_signals(
+    question_padded: str,
+    element: str,
+    alias_value: str,
+    attr_blob: str,
+) -> tuple[int, str, str] | None:
+    candidates: list[tuple[int, str, str]] = []
+    for score, text, source in (
+        (100, element, "element"),
+        (90, alias_value, "alias"),
+    ):
+        matched = _match_normalised_phrase(question_padded, text)
+        if matched:
+            candidates.append((score, matched, source))
+
+    if attr_blob:
+        for item in attr_blob.split(chr(31)):
+            if "=" not in item:
+                continue
+            attr_name, attr_value = item.split("=", 1)
+            matched = _match_normalised_phrase(question_padded, attr_value)
+            if matched:
+                candidates.append((80, matched, f"attribute:{attr_name}"))
+
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: (item[0], len(item[1])))
+
+
+def _match_normalised_phrase(question_padded: str, value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    norm = _normalise_element_token(raw)
+    compact_len = len(norm.replace(" ", ""))
+    if compact_len < 2:
+        return ""
+    # Short generic one-word values are too noisy unless they are numbers/codes.
+    if compact_len < 4 and not any(ch.isdigit() for ch in norm):
+        return ""
+    if f" {norm} " in question_padded:
+        return raw
+    return ""
+
+
+def _member_fts_query(text: str) -> str:
+    words = re.findall(r"[a-zA-Z0-9\u4e00-\u9fff]+", text or "")
+    useful = []
+    for word in words:
+        compact = re.sub(r"[^a-zA-Z0-9\u4e00-\u9fff]+", "", word)
+        if len(compact) < 2:
+            continue
+        if len(compact) < 4 and not any(ch.isdigit() for ch in compact):
+            continue
+        useful.append(compact)
+    if not useful:
+        return ""
+    return " OR ".join(f'"{word}"' for word in useful[:12])
 
 
 def get_cubes_cached() -> list[dict]:
@@ -778,7 +1057,7 @@ _PNL_BOTTOMLINE_TOKEN_SETS: list[set[str]] = [
     {"gross", "margin"},
     {"comprehensive", "income"},
     {"income", "statement"},
-    {"profit", "and", "loss"},
+    {"profit", "and", "loss"},  # "Profit and Loss" or "Profit & Loss" (after & norm)
     {"ebit"},
     {"ebitda"},
     {"result", "for", "year"},
@@ -787,7 +1066,10 @@ _PNL_BOTTOMLINE_TOKEN_SETS: list[set[str]] = [
 
 
 def _looks_like_pnl_bottom_line(name: str) -> bool:
-    words = set(re.findall(r"[a-z]+", str(name).lower()))
+    # Normalise "&" → " and " so "Profit & Loss" tokenises to {"profit","and","loss"}
+    # and matches the {"profit","and","loss"} token set above.
+    normalised = re.sub(r"\s*&\s*", " and ", str(name).lower())
+    words = set(re.findall(r"[a-z]+", normalised))
     if not words:
         return False
     return any(tokens.issubset(words) for tokens in _PNL_BOTTOMLINE_TOKEN_SETS)
@@ -1082,4 +1364,7 @@ def get_dim_hierarchy_edges(dim_names: list[str]) -> dict[str, list[tuple[str, s
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(_DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA temp_store=MEMORY")
     return conn

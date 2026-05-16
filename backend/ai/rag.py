@@ -2,14 +2,14 @@
 Query history store for RAG-based MDX generation.
 
 Uses SQLite FTS5 (built-in, no extra dependencies) to store and retrieve
-past successful (question → cube + MDX) pairs.  When the AI generates a
+past successful (question -> cube + MDX) pairs. When the AI generates a
 new MDX it receives the top-k similar past queries as few-shot examples,
 reducing dimension/element mistakes over time.
 
 Schema
 ------
-query_history  FTS5 virtual table  — full-text search on question + cube
-query_meta     regular table       — timestamp and row_count per entry
+query_history  FTS5 virtual table  - full-text search on question + cube
+query_meta     regular table       - timestamp and row_count per entry
 """
 
 import re
@@ -49,34 +49,16 @@ def init_db() -> None:
 # ---------------------------------------------------------------------------
 
 def _to_structural_template(mdx: str) -> str:
-    """Strip specific element values, keeping axis and CrossJoin structure.
+    """Strip specific element values while preserving the axis shape.
 
-    Axes:  {[D].[D].[E1], [D].[D].[E2]} → {[D].[D].Members}
-    WHERE: [D].[D].[SpecificValue]       → [D].[D].[?]
+    Do not rewrite explicit sets to .Members. That teaches the MDX generator a
+    broad expansion pattern the validator and prompt rules intentionally reject.
     """
-    where_m = re.search(r"\bWHERE\s*\(", mdx, re.IGNORECASE)
-    pre_where = mdx[: where_m.start()] if where_m else mdx
-    where_part = mdx[where_m.start():] if where_m else ""
-
-    def _collapse_set(m: re.Match) -> str:
-        inner = m.group(1)
-        if re.search(r"\.Members\b", inner, re.IGNORECASE):
-            return m.group(0)
-        dm = re.search(r"\[([^\]]+)\]\.\[([^\]]+)\]\.", inner)
-        if dm:
-            return f"{{[{dm.group(1)}].[{dm.group(2)}].Members}}"
-        return m.group(0)
-
-    pre_where = re.sub(r"\{([^{}]+)\}", _collapse_set, pre_where)
-
-    if where_part:
-        where_part = re.sub(
-            r"\[([^\]]+)\]\.\[([^\]]+)\]\.\[[^\]]+\]",
-            r"[\1].[\2].[?]",
-            where_part,
-        )
-
-    return pre_where + where_part
+    return re.sub(
+        r"\[([^\]]+)\]\.\[([^\]]+)\]\.\[[^\]]+\]",
+        r"[\1].[\2].[?]",
+        mdx,
+    )
 
 
 def save_query(question: str, cube: str, mdx: str, row_count: int = 0) -> None:
@@ -153,8 +135,8 @@ def _fts_terms(text: str) -> str:
     Each word becomes an optional term (OR logic) so partial matches still
     surface relevant results.
     """
-    words = re.findall(r"[a-zA-Z0-9一-鿿]+", text)
+    words = re.findall(r"[a-zA-Z0-9\u4e00-\u9fff]+", text)
     if not words:
         return ""
-    # Wrap each word in quotes to prevent FTS5 operator interpretation
+    # Wrap each word in quotes to prevent FTS5 operator interpretation.
     return " OR ".join(f'"{w}"' for w in words)

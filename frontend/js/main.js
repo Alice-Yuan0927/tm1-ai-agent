@@ -248,7 +248,11 @@ function _setTm1ConfigForm(config) {
   document.getElementById("tm1CfgAddress").value = config.address || "";
   document.getElementById("tm1CfgPort").value = config.port || "";
   document.getElementById("tm1CfgUser").value = config.user || "";
-  document.getElementById("tm1CfgPassword").value = config.password || "";
+  const passwordInput = document.getElementById("tm1CfgPassword");
+  if (passwordInput) {
+    passwordInput.value = "";
+    passwordInput.placeholder = config.has_password ? "Saved password unchanged" : "";
+  }
   document.getElementById("tm1CfgNamespace").value = config.namespace || "";
   document.getElementById("tm1CfgSsl").checked = Boolean(config.ssl);
   document.getElementById("tm1CfgVerify").checked = Boolean(config.verify);

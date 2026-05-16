@@ -1,5 +1,7 @@
 import json
 import os
+import tempfile
+import threading
 from pathlib import Path
 
 
@@ -154,6 +156,7 @@ def build_llm_config(values: dict[str, object]) -> dict:
 
 
 LLM_CONFIG = _load_llm_config()
+_config_lock = threading.Lock()
 
 
 def public_tm1_config() -> dict:
@@ -169,7 +172,7 @@ def public_tm1_config() -> dict:
         "address": TM1_CONFIG.get("address", ""),
         "port": TM1_CONFIG.get("port", 9510),
         "user": TM1_CONFIG.get("user", ""),
-        "password": TM1_CONFIG.get("password", ""),
+        "has_password": bool(TM1_CONFIG.get("password", "")),
         "namespace": TM1_CONFIG.get("namespace", ""),
         "ssl": bool(TM1_CONFIG.get("ssl", False)),
         "verify": bool(TM1_CONFIG.get("verify", False)),
@@ -188,29 +191,47 @@ def update_tm1_config(values: dict[str, object]) -> dict:
         "analysis_temperature": values.get("analysis_temperature", DEFAULT_LLM_TEMPERATURES["analysis_temperature"]),
         "suggestions_temperature": values.get("suggestions_temperature", DEFAULT_LLM_TEMPERATURES["suggestions_temperature"]),
     })
-    config = build_tm1_config(values)
-    LLM_CONFIG.clear()
-    LLM_CONFIG.update(llm_config)
-    TM1_CONFIG.clear()
-    TM1_CONFIG.update(config)
+    tm1_values = dict(values)
+    if not str(tm1_values.get("password", "")):
+        tm1_values["password"] = TM1_CONFIG.get("password", "")
+    config = build_tm1_config(tm1_values)
+    with _config_lock:
+        LLM_CONFIG.clear()
+        LLM_CONFIG.update(llm_config)
+        TM1_CONFIG.clear()
+        TM1_CONFIG.update(config)
     _write_tm1_config(config)
     _write_llm_config(llm_config)
     return public_tm1_config()
 
 
+def _atomic_write(path: Path, content: str) -> None:
+    """Write content to path atomically via a temp file + os.replace."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def _write_tm1_config(config: dict) -> None:
-    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-    TM1_CONFIG_PATH.write_text(
+    _atomic_write(
+        TM1_CONFIG_PATH,
         json.dumps(build_tm1_config(config), ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
     )
 
 
 def _write_llm_config(config: dict) -> None:
-    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-    LLM_CONFIG_PATH.write_text(
+    _atomic_write(
+        LLM_CONFIG_PATH,
         json.dumps(build_llm_config(config), ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
     )
 
 
@@ -252,11 +273,12 @@ MAX_DATA_ROWS = 50_000
 # rows, entities as columns). Time-series dimensions are never transposed.
 TRANSPOSE_COLS = env_int("TRANSPOSE_COLS", 30)
 
-# Max pivot rows forwarded to the AI model for analysis. Keeps prompts well under
-# the 200K token limit even when MAX_DATA_ROWS is large. Raw TM1 cells contain
-# a _dimensions dict that duplicates every field, making them 5-10x larger
-# than the equivalent pivot row — so 300 pivoted rows ≈ safe budget.
-AI_MAX_ROWS = env_int("AI_MAX_ROWS", 300)
+# Max pivot table size forwarded to the AI model for narrative analysis. This
+# is intentionally lower than MAX_DATA_ROWS because hosted LLMs also enforce
+# tokens-per-minute limits; Claude's default TPM can be much lower than its
+# context window.
+AI_MAX_ROWS = env_int("AI_MAX_ROWS", 80)
+AI_MAX_COLUMNS = env_int("AI_MAX_COLUMNS", 40)
 
 # ── AI token budgets ───────────────────────────────────────────────────────────
 # MDX generation: keep enough room for the visible SELECT/FROM/WHERE statement.

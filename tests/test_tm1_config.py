@@ -62,6 +62,8 @@ def test_tm1_config_is_persisted_to_backend_runtime_json(monkeypatch):
         assert saved["semantic_profile_temperature"] == 0.2
         assert persisted["port"] == 30090
         assert "llm_model" not in persisted
+        assert "password" not in saved
+        assert saved["has_password"] is False
         assert persisted_llm["provider"] == "openai"
         assert persisted_llm["model"] == "gpt-5.5"
         assert "api_key" not in persisted_llm

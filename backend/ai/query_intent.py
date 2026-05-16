@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 from typing import TypedDict
 
+from .tm1_lexicon import CURRENCY_VIEW_PATTERNS, STATEMENT_INTENTS, STATEMENT_SECTION_VOCAB
 
 class QueryIntent(TypedDict):
     primary: str
@@ -30,30 +31,11 @@ class QueryIntent(TypedDict):
 # Currency view detection. For data_source role dims, the right element
 # depends on whether the user wants the entity's local view or the parent /
 # group / translated view.
-_CURRENCY_VIEW_PATTERNS: list[tuple[str, str]] = [
-    # parent / consolidated / translated
-    (r"\b(in\s+)?usd\s*(view|amount|value|terms|p\s*&\s*l)?\b", "parent"),
-    (r"\bus\s+dollars?\b", "parent"),
-    (r"\bparent\s+currency\b", "parent"),
-    (r"\bpct\b", "parent"),
-    (r"\bconsolidated\s+(view|p\s*&\s*l|amount|usd)?\b", "parent"),
-    (r"\bconsol\s+usd\b", "parent"),
-    (r"\bgroup\s+(currency|view|reporting|p\s*&\s*l|level)\b", "parent"),
-    (r"\btranslated\b", "parent"),
-    # local / entity
-    (r"\blocal\s+currency\b", "local"),
-    (r"\blcy\b", "local"),
-    (r"\bentity\s+currency\b", "local"),
-    (r"\bas\s+reported\b", "local"),
-    (r"\bin\s+local\b", "local"),
-]
-
-
 def _detect_currency_view(question: str) -> str:
     """Return 'local' or 'parent'. Default 'local' for entity-level questions
     where no currency is explicitly named."""
     text = (question or "").lower()
-    for pattern, view in _CURRENCY_VIEW_PATTERNS:
+    for pattern, view in CURRENCY_VIEW_PATTERNS:
         if re.search(pattern, text):
             return view
     return "local"
@@ -113,9 +95,6 @@ def detect_query_intent(question: str) -> QueryIntent:
 # ── Per-dim schema pre-filter ────────────────────────────────────────────────
 
 # Statement-level intents that share the same line-item-dim filtering rule.
-_STATEMENT_INTENTS = {"income_statement", "balance_sheet", "cash_flow", "trial_balance"}
-
-
 def prepare_schema_for_query(
     schema: dict,
     question: str,
@@ -143,6 +122,19 @@ def prepare_schema_for_query(
     return {**schema, "dimensions": filtered_dims, "_query_intent": intent}
 
 
+def _consolidation_matches_statement(name: str, intent_primary: str) -> bool:
+    """Return True if this consolidation name looks like the section container
+    for the given statement intent.  Works for all STATEMENT_INTENTS — add new
+    vocab rows to STATEMENT_SECTION_VOCAB in tm1_lexicon.py; no code changes
+    needed here."""
+    vocab = STATEMENT_SECTION_VOCAB.get(intent_primary, [])
+    if not vocab:
+        return False
+    normalised = re.sub(r"\s*[&/]\s*", " and ", str(name).lower())
+    words = set(re.findall(r"[a-z]+", normalised))
+    return bool(words) and any(tok.issubset(words) for tok in vocab)
+
+
 def _filter_top_consolidations(
     dim: dict,
     role: str,
@@ -151,7 +143,7 @@ def _filter_top_consolidations(
 ) -> list[str]:
     """Decide which top_consolidations to keep for one dim, given the role
     and detected intent."""
-    from ..tm1.cache import _looks_like_pnl_bottom_line, _base_word_variants, _dim_base_name
+    from ..tm1.cache import _base_word_variants, _dim_base_name
 
     all_tops = list(dim.get("top_consolidations") or [])
     if not all_tops:
@@ -174,10 +166,11 @@ def _filter_top_consolidations(
     ]
 
     # --- Line-item dim under a statement question ---
-    if role == "line_item" and primary in _STATEMENT_INTENTS:
-        # Keep P&L / BS / CF bottom-line names + the universal "All <basename>"
-        # rollup. Drop "Total <Category>" siblings that only cover one slice.
-        relevant = [t for t in all_tops if _looks_like_pnl_bottom_line(t)]
+    if role == "line_item" and primary in STATEMENT_INTENTS:
+        # Keep section containers that match the detected statement type
+        # (P&L, Balance Sheet, Cash Flow, ...) via intent-driven vocab lookup.
+        # Also keep the universal "All <basename>" aggregate as a safe fallback.
+        relevant = [t for t in all_tops if _consolidation_matches_statement(t, primary)]
         kept = _dedup_preserve(name_mentioned + relevant + universals)
         if kept:
             return kept[:15]

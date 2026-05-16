@@ -12,17 +12,15 @@ import re
 from dataclasses import dataclass, field
 from datetime import date
 
+from .tm1_lexicon import SCENARIO_ALIASES, SCENARIO_TERMS, SCENARIO_TERM_TO_CANON, STATEMENT_PATTERN
+
 # Confidence below MIN_CONFIDENCE → defer to LLM completely.
 # Confidence below SURFACE_THRESHOLD → still execute the plan but show the
 # user the assumptions we made, since we're not sure they're right.
 MIN_CONFIDENCE: float = 0.55
 SURFACE_THRESHOLD: float = 0.85
 
-_PNL_PATTERN = re.compile(
-    r"\b(p\s*&\s*l|p\s*and\s*l|profit\s+and\s+loss|income\s+statement|"
-    r"pnl|p\.?\s*&\s*l\.?\s*statement)\b",
-    re.IGNORECASE,
-)
+_PNL_PATTERN = STATEMENT_PATTERN
 _BY_MONTH_PATTERN = re.compile(r"\bby\s+(month|months|period|periods)\b", re.IGNORECASE)
 _BY_QUARTER_PATTERN = re.compile(r"\bby\s+(quarter|quarters|q[1-4])\b", re.IGNORECASE)
 _BY_SCENARIO_PATTERN = re.compile(r"\bby\s+(scenario|version)\b", re.IGNORECASE)
@@ -30,17 +28,9 @@ _YEAR_PATTERN = re.compile(r"\b(20\d{2})\b")
 
 # Words/phrases that pick out specific scenario elements. Order matters
 # for the "X vs Y" parser - longer/more specific terms come first.
-_SCENARIO_TERMS = [
-    ("actual", ["actual", "actuals", "act"]),
-    ("budget", ["budget", "budgeted", "bud", "bgt"]),
-    ("forecast", ["forecast", "forecasted", "fcst", "fc"]),
-    ("plan", ["plan", "planned", "planning"]),
-    ("target", ["target", "targets"]),
-    ("prior", ["prior year", "prior", "last year", "ly", "previous year"]),
-    ("variance", ["variance", "var", "delta"]),
-]
-_TERM_TO_CANON: dict[str, str] = {alias: canon for canon, aliases in _SCENARIO_TERMS for alias in aliases}
-_SCENARIO_ALL_ALIASES = sorted({alias for _, aliases in _SCENARIO_TERMS for alias in aliases}, key=len, reverse=True)
+_SCENARIO_TERMS = SCENARIO_TERMS
+_TERM_TO_CANON = SCENARIO_TERM_TO_CANON
+_SCENARIO_ALL_ALIASES = SCENARIO_ALIASES
 _SCENARIO_PAIR_RE = re.compile(
     rf"\b({'|'.join(re.escape(a) for a in _SCENARIO_ALL_ALIASES)})\b"
     rf"\s+(?:vs\.?|versus|compared\s+to|against|and)\s+"
@@ -454,6 +444,8 @@ _PNL_PARENT_HINTS = [
     "income statement",
     "profit and loss",
     "profit loss statement",
+    "p and l",         # "P&L" / "P & L" after & → and normalisation
+    "pnl",             # "PnL" style
     "p l statement",
     # universal aggregate (last-resort - only when no specific P&L line found)
     "all account",
@@ -464,8 +456,10 @@ def _pnl_hint_score(candidate: str, hint: str) -> int:
     """Return the hint's specificity score if all of its words appear in the
     candidate name; 0 if it doesn't apply. Higher = more specific P&L bottom
     line. Normalises punctuation so "Profit / (Loss) after Tax" matches the
-    hint "profit after tax"."""
-    cand_words = set(re.findall(r"[a-z]+", candidate.lower()))
+    hint "profit after tax", and "&" is expanded to "and" so "Profit & Loss"
+    matches the hint "profit and loss"."""
+    normalised = re.sub(r"\s*&\s*", " and ", candidate.lower())
+    cand_words = set(re.findall(r"[a-z]+", normalised))
     hint_words = set(re.findall(r"[a-z]+", hint.lower()))
     if not hint_words or not hint_words.issubset(cand_words):
         return 0
@@ -545,14 +539,6 @@ def _pick_pnl_top_consolidation(line_dim: dict, question: str = "") -> tuple[str
             # If user asked for a specific qualifier but we couldn't honour it,
             # mark it so the planner records the discrepancy.
             return best[1], fallback_status if fallback_status == "qualifier_missing" else "exact"
-    for hint in _PNL_PARENT_HINTS:
-        best: tuple[int, str] = (0, "")
-        for candidate in tops:
-            score = _pnl_hint_score(candidate, hint)
-            if score > best[0]:
-                best = (score, candidate)
-        if best[0]:
-            return best[1], "exact"
 
     default = str(line_dim.get("default_element", "")).strip()
     if default and default in tops:
@@ -796,7 +782,7 @@ def _pick_currency_view_element(dim: dict, currency_view: str) -> str:
 _RESERVED_DEFAULT_FILTER_KEYS = {
     "current_year", "current_month", "current_day", "current_week",
     "forecast_year", "source", "used_real_current_date",
-    "Month",  # handled specially elsewhere
+    "Month", "Year",  # picked via _pick_year / time-dim logic, not generic overrides
 }
 
 
@@ -815,8 +801,6 @@ def _profile_dim_defaults(model_profile: dict | None) -> dict[str, str]:
     for key, value in raw.items():
         if key in _RESERVED_DEFAULT_FILTER_KEYS:
             continue
-        if key == "Year":
-            continue  # Year is picked via _pick_year
         if not isinstance(value, str) or not value.strip():
             continue
         out[str(key)] = value.strip()

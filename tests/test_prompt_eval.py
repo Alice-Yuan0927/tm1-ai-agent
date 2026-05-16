@@ -1,20 +1,10 @@
-import importlib.util
-from pathlib import Path
-
-
-def _load_module(name: str, relative_path: str):
-    module_path = Path(__file__).resolve().parents[1] / relative_path
-    spec = importlib.util.spec_from_file_location(name, module_path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
-    spec.loader.exec_module(module)
-    return module
-
-
-prompt_rules = _load_module("prompt_rules", "backend/ai/prompt_rules.py")
-result_validators = _load_module("result_validators", "backend/ai/result_validators.py")
-finance_semantics = _load_module("finance_semantics", "backend/ai/finance_semantics.py")
+from backend.ai import finance_semantics
+from backend.ai import prompt_rules
+from backend.ai import result_validators
 from backend.ai import service as ai_service
+from backend.ai.dim_roles import get_dim_role
+from backend.ai.mdx_planner import try_plan_mdx
+from backend.ai.rag import _to_structural_template
 from backend.response_messages import no_usable_data_message
 
 GENERAL_AGENT_CONTRACT = prompt_rules.GENERAL_AGENT_CONTRACT
@@ -24,6 +14,7 @@ result_shape_issue = result_validators.result_shape_issue
 specific_focus_issue = result_validators.specific_focus_issue
 statement_line_item_issue = result_validators.statement_line_item_issue
 default_filter_issue = result_validators.default_filter_issue
+default_filter_warning = result_validators.default_filter_warning
 build_finance_semantic_profile = finance_semantics.build_finance_semantic_profile
 is_unsupported_temperature_error = ai_service._is_unsupported_temperature_error
 needs_openai_min_token_budget = ai_service._needs_openai_min_token_budget
@@ -503,3 +494,130 @@ def test_default_filter_validator_keeps_user_named_elements():
     )
 
     assert default_filter_issue("show me SLIM HK P&L", schema, mdx) is None
+
+
+def test_default_filter_mismatch_is_reported_as_nonfatal_warning():
+    schema = {
+        "dimensions": [
+            {"name": "Company", "is_measure": False, "is_time_dim": False, "default_element": "All Companies"},
+            {"name": "Measure", "is_measure": True, "default_element": "Amount"},
+        ]
+    }
+    mdx = (
+        "SELECT {[Measure].[Measure].[Amount]} ON COLUMNS "
+        "FROM [Cube] "
+        "WHERE ([Company].[Company].[SLIM-HK])"
+    )
+
+    warning = default_filter_warning("show me P&L", schema, mdx)
+
+    assert warning
+    assert warning.startswith("warning: Default filter validation failed")
+
+
+def test_currency_alias_promotes_data_source_dim_to_currency_view_role():
+    schema = {
+        "cube": "Consol GL Company",
+        "dimensions": [
+            {
+                "name": "Account",
+                "is_measure": False,
+                "is_time_dim": False,
+                "elements": ["Revenue", "Cost of Sales"],
+                "top_consolidations": ["Net Income"],
+                "default_element": "Net Income",
+            },
+            {
+                "name": "Year",
+                "is_time_dim": True,
+                "elements": ["2024"],
+                "default_element": "2024",
+            },
+            {
+                "name": "Scenario",
+                "is_time_dim": False,
+                "elements": ["ACT"],
+                "default_element": "ACT",
+            },
+            {
+                "name": "S Consol GL Company",
+                "is_time_dim": False,
+                "elements": ["All Data Sources List", "EC", "PCT"],
+                "default_element": "All Data Sources List",
+                "element_attr_values": {
+                    "EC": {"Alias": "Entity Currency"},
+                    "PCT": {"Alias": "Parent Currency", "Description": "Parent Currency Total"},
+                },
+            },
+            {
+                "name": "M Consol GL Company",
+                "is_measure": True,
+                "elements": ["Amount"],
+                "default_element": "Amount",
+            },
+        ],
+    }
+    model_profile = {
+        "dim_roles": {"S Consol GL Company": "data_source"},
+        "finance_semantics": {
+            "income_statement": {
+                "confidence": 1.0,
+                "line_item_dimension": "Account",
+                "preferred_measures": ["Amount"],
+            }
+        },
+    }
+    source_dim = next(d for d in schema["dimensions"] if d["name"] == "S Consol GL Company")
+
+    assert get_dim_role(source_dim, model_profile["dim_roles"]) == "currency_view"
+
+    plan = try_plan_mdx("show me P&L in 2024", schema, model_profile=model_profile)
+
+    assert plan is not None
+    assert "[S Consol GL Company].[S Consol GL Company].[EC]" in plan.mdx
+    assert "All Data Sources List" not in plan.mdx
+
+
+def test_profile_dim_roles_map_uses_content_based_roles():
+    from backend.ai.dim_roles import build_dim_roles_map
+
+    schema_summary = {
+        "cubes": [
+            {
+                "cube": "P&L",
+                "dimensions": [
+                    {
+                        "name": "S Consol GL Company",
+                        "elements": ["All Data Sources List", "EC", "PCT"],
+                        "element_attr_values": {
+                            "EC": {"Alias": "Entity Currency"},
+                            "PCT": {"Description": "Parent Currency Total"},
+                        },
+                    },
+                    {
+                        "name": "Reporting Currency",
+                        "elements": ["USD", "EUR", "HKD", "AUD", "Not a currency"],
+                    },
+                ],
+            }
+        ],
+    }
+
+    roles = build_dim_roles_map(schema_summary)
+
+    assert roles["S Consol GL Company"] == "currency_view"
+    assert roles["Reporting Currency"] == "currency_code"
+
+
+def test_rag_structural_template_does_not_introduce_members_expansion():
+    mdx = (
+        "SELECT {[Month].[Month].[01], [Month].[Month].[02]} ON COLUMNS, "
+        "{Descendants([Account].[Account].[Net Income], 99, LEAVES)} ON ROWS "
+        "FROM [P&L] WHERE ([Year].[Year].[2025], [Scenario].[Scenario].[Actual])"
+    )
+
+    template = _to_structural_template(mdx)
+
+    assert ".Members" not in template
+    assert "Descendants([Account].[Account].[?], 99, LEAVES)" in template
+    assert "[Month].[Month].[?]" in template

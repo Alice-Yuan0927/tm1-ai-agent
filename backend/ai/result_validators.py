@@ -3,6 +3,8 @@
 import re
 from typing import cast
 
+from .tm1_lexicon import STATEMENT_PATTERN
+
 
 def result_shape_issue(
     rows: list[dict[str, object]],
@@ -275,6 +277,7 @@ def default_filter_issue(
     consumed_shapes = {_shape(v) for v in filters.values() if v}
 
     question_text = question.lower()
+    profile_defaults = (model_profile or {}).get("default_filters") or {}
     for dimension in schema.get("dimensions", []):
         dim_name = str(dimension.get("name", ""))
         if not dim_name or dim_name in axis_dims or dimension.get("is_measure") or dimension.get("is_time_dim"):
@@ -284,6 +287,19 @@ def default_filter_issue(
             continue
         if _question_mentions_element(question_text, actual):
             continue
+        expected_default = str(
+            profile_defaults.get(dim_name)
+            or dimension.get("default_element")
+            or ""
+        ).strip()
+        if expected_default and actual != expected_default:
+            return (
+                "Default filter validation failed: dimension "
+                f"'{dim_name}' was not specified by the user, but WHERE filters "
+                f"it to '{actual}' instead of the default '{expected_default}'. "
+                f"Filter '{dim_name}' to '{expected_default}' unless the user "
+                "explicitly asks for another element."
+            )
         # ROLE gate: non-entity dims are never wrong here. Their elements may
         # contain entity-looking strings but those mentions don't belong to
         # this dim.
@@ -306,6 +322,230 @@ def default_filter_issue(
     return None
 
 
+def default_filter_warning(
+    question: str,
+    schema: dict,
+    mdx: str,
+    model_profile: dict | None = None,
+) -> str | None:
+    """Return a non-fatal debug warning for suspicious default filters."""
+    issue = default_filter_issue(question, schema, mdx, model_profile=model_profile)
+    if not issue:
+        return None
+    return f"warning: {issue}"
+
+
+def static_mdx_schema_issue(mdx: str, schema: dict) -> str | None:
+    """Validate generated MDX against cached cube schema before TM1 execution."""
+    cube_dims = [
+        str(d.get("name", ""))
+        for d in schema.get("dimensions", []) or []
+        if d.get("name")
+    ]
+    if not cube_dims:
+        return None
+    cube_dim_set = set(cube_dims)
+
+    select_match = re.search(r"(?is)\bSELECT\b(.+?)\bFROM\b", mdx or "")
+    if not select_match:
+        return "Static MDX validation failed: missing SELECT axes before FROM."
+    axes_text = select_match.group(1)
+    where_match = re.search(r"(?is)\bWHERE\s*\((.+)\)\s*$", mdx or "")
+    where_text = where_match.group(1) if where_match else ""
+
+    axis_dims = _ordered_unique(
+        dim for dim, _hier in re.findall(r"\[([^\]]+)\]\.\[([^\]]+)\]", axes_text)
+    )
+    where_members = re.findall(
+        r"\[([^\]]+)\]\.\[([^\]]+)\]\.\[([^\]]+)\]",
+        where_text,
+    )
+    where_dims = _ordered_unique(dim for dim, _hier, _elem in where_members)
+
+    unknown_dims = [dim for dim in axis_dims + where_dims if dim not in cube_dim_set]
+    if unknown_dims:
+        return (
+            "Static MDX validation failed: dimension "
+            f"'{unknown_dims[0]}' is not in cube [{schema.get('cube', '')}]."
+        )
+
+    duplicate_dims = [dim for dim in axis_dims if dim in where_dims]
+    if duplicate_dims:
+        return (
+            "Static MDX validation failed: dimension "
+            f"'{duplicate_dims[0]}' appears on an axis and in WHERE. "
+            "Each dimension must appear exactly once."
+        )
+
+    missing_dims = [dim for dim in cube_dims if dim not in set(axis_dims + where_dims)]
+    if missing_dims:
+        return (
+            "Static MDX validation failed: missing dimension "
+            f"'{missing_dims[0]}'. Put it on an axis or add one WHERE member."
+        )
+
+    repeated = _duplicates(axis_dims + where_dims)
+    if repeated:
+        return (
+            "Static MDX validation failed: dimension "
+            f"'{repeated[0]}' appears more than once."
+        )
+
+    if where_text and re.search(r"(?i)\.Members|\.Children|Descendants\s*\(|\{|\}", where_text):
+        return (
+            "Static MDX validation failed: WHERE contains a set expression. "
+            "WHERE must contain only single members [Dim].[Dim].[Element]."
+        )
+
+    element_issue = _member_existence_issue(mdx, schema)
+    if element_issue:
+        return element_issue
+
+    set_parent_issue = _set_parent_issue(mdx, schema)
+    if set_parent_issue:
+        return set_parent_issue
+
+    return None
+
+
+def _batch_element_exists(pairs: list[tuple[str, str]]) -> set[tuple[str, str]]:
+    """Return the subset of (dim_name, LOWER(element_name)) pairs that exist in cache."""
+    from ..tm1.cache import _connect
+    from collections import defaultdict
+
+    by_dim: dict[str, list[str]] = defaultdict(list)
+    for dim, elem in pairs:
+        by_dim[dim].append(elem.lower())
+
+    found: set[tuple[str, str]] = set()
+    try:
+        with _connect() as conn:
+            for dim, elems in by_dim.items():
+                placeholders = ",".join("?" * len(elems))
+                rows = conn.execute(
+                    f"SELECT LOWER(element_name) FROM elements"
+                    f" WHERE dim_name = ? AND LOWER(element_name) IN ({placeholders})",
+                    [dim, *elems],
+                ).fetchall()
+                for (elem_lower,) in rows:
+                    found.add((dim, elem_lower))
+    except Exception:
+        pass
+    return found
+
+
+def _batch_consolidated_exists(pairs: list[tuple[str, str]]) -> set[tuple[str, str]]:
+    """Return subset of (dim_name, LOWER(element_name)) that are Consolidated in cache."""
+    from ..tm1.cache import _connect
+    from collections import defaultdict
+
+    by_dim: dict[str, list[str]] = defaultdict(list)
+    for dim, elem in pairs:
+        by_dim[dim].append(elem.lower())
+
+    found: set[tuple[str, str]] = set()
+    try:
+        with _connect() as conn:
+            for dim, elems in by_dim.items():
+                placeholders = ",".join("?" * len(elems))
+                rows = conn.execute(
+                    f"SELECT LOWER(element_name) FROM elements"
+                    f" WHERE dim_name = ? AND element_type = 'Consolidated'"
+                    f"   AND LOWER(element_name) IN ({placeholders})",
+                    [dim, *elems],
+                ).fetchall()
+                for (elem_lower,) in rows:
+                    found.add((dim, elem_lower))
+    except Exception:
+        pass
+    return found
+
+
+def _member_existence_issue(mdx: str, schema: dict) -> str | None:
+    schema_elements = {
+        str(d.get("name", "")): {
+            str(e).lower()
+            for e in (
+                list(d.get("elements", []) or [])
+                + list(d.get("consolidations", []) or [])
+                + list(d.get("top_consolidations", []) or [])
+                + ([d.get("default_element")] if d.get("default_element") else [])
+            )
+        }
+        for d in schema.get("dimensions", []) or []
+    }
+
+    triples = re.findall(r"\[([^\]]+)\]\.\[([^\]]+)\]\.\[([^\]]+)\]", mdx or "")
+    unknown_pairs = [
+        (dim, element)
+        for dim, _hier, element in triples
+        if element != "?" and element.lower() not in schema_elements.get(dim, set())
+    ]
+
+    if not unknown_pairs:
+        return None
+
+    found_in_cache = _batch_element_exists(unknown_pairs)
+    for dim, element in unknown_pairs:
+        if (dim, element.lower()) not in found_in_cache:
+            return (
+                "Static MDX validation failed: element "
+                f"'{element}' was not found in dimension '{dim}'. Use an exact "
+                "element from the schema or grounded member candidates."
+            )
+    return None
+
+
+def _set_parent_issue(mdx: str, schema: dict) -> str | None:
+    schema_consolidations = {
+        str(d.get("name", "")): {
+            str(e).lower()
+            for e in (
+                list(d.get("consolidations", []) or [])
+                + list(d.get("top_consolidations", []) or [])
+            )
+        }
+        for d in schema.get("dimensions", []) or []
+    }
+    parent_refs = re.findall(
+        r"(?is)(?:Descendants\s*\(\s*)?\[([^\]]+)\]\.\[[^\]]+\]\.\[([^\]]+)\]\s*(?:,\s*\d+[^)]*\)|\.Children)",
+        mdx or "",
+    )
+
+    unknown_parents = [
+        (dim, element)
+        for dim, element in parent_refs
+        if element.lower() not in schema_consolidations.get(dim, set())
+    ]
+
+    if not unknown_parents:
+        return None
+
+    found_consolidated = _batch_consolidated_exists(unknown_parents)
+    for dim, element in unknown_parents:
+        if (dim, element.lower()) not in found_consolidated:
+            return (
+                "Static MDX validation failed: set function parent "
+                f"'{element}' in dimension '{dim}' is not a consolidated element. "
+                "Use .Children or Descendants only on consolidated elements."
+            )
+    return None
+
+
+def _ordered_unique(items) -> list[str]:
+    return list(dict.fromkeys(str(item) for item in items if item))
+
+
+def _duplicates(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    dupes: list[str] = []
+    for item in items:
+        if item in seen and item not in dupes:
+            dupes.append(item)
+        seen.add(item)
+    return dupes
+
+
 def _question_mentions_element(question_text: str, element: str) -> bool:
     normalized_element = re.sub(r"[^a-z0-9]+", " ", element.lower()).strip()
     normalized_question = re.sub(r"[^a-z0-9]+", " ", question_text).strip()
@@ -313,13 +553,7 @@ def _question_mentions_element(question_text: str, element: str) -> bool:
 
 
 def _is_statement_question(question: str) -> bool:
-    text = str(question).lower()
-    return bool(
-        re.search(r"\bp\s*&\s*l\b", text)
-        or re.search(r"\bprofit\s+and\s+loss\b", text)
-        or re.search(r"\bincome\s+statement\b", text)
-        or re.search(r"\bp\s+and\s+l\b", text)
-    )
+    return bool(STATEMENT_PATTERN.search(question or ""))
 
 
 _LINE_ITEM_TOKENS = ("account", "line item", "chart of accounts", "p&l account", "gl")
@@ -372,7 +606,7 @@ def find_named_schema_element(question: str, schema: dict) -> tuple[str, str] | 
     matches: list[tuple[int, str, str]] = []
     for dimension in schema.get("dimensions", []):
         dim_name = str(dimension.get("name", ""))
-        if not dim_name or dimension.get("is_time"):
+        if not dim_name or dimension.get("is_time_dim"):
             continue
         if any(token in dim_name.lower() for token in ("year", "month", "period", "time", "date")):
             continue
@@ -392,10 +626,18 @@ def find_named_schema_element(question: str, schema: dict) -> tuple[str, str] | 
 
 def normalise_focus_text(value: str) -> str:
     tokens = re.findall(r"[a-z0-9]+", str(value).lower().replace("_", " ").replace("-", " "))
-    normalised = [
-        token[:-1] if len(token) > 4 and token.endswith("s") else token
-        for token in tokens
-    ]
+    normalised = []
+    for token in tokens:
+        # Strip trailing plural 's' only when safe — avoid mangling words like
+        # "analysis" → "analysi", "status" → "statu", "bonus" → "bonu".
+        if (
+            len(token) > 4
+            and token.endswith("s")
+            and not token.endswith(("ss", "us", "is", "as", "os"))
+        ):
+            normalised.append(token[:-1])
+        else:
+            normalised.append(token)
     return " ".join(normalised)
 
 

@@ -7,13 +7,17 @@ Usage:
 """
 
 import json as _json
+import logging
 import re
 import threading
 import time as _time
 from pathlib import Path
 from typing import Any, cast
 
-from fastapi import Body, FastAPI, HTTPException
+_log = logging.getLogger(__name__)
+
+from anyio import from_thread
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
@@ -37,15 +41,16 @@ from .ai import (
 )
 from .tm1.cache import find_question_element_matches
 from .ai.service import validate_generated_mdx
-from .config import AI_MAX_ROWS, get_llm_model, FRONTEND_DIR, TM1_CONFIG
+from .config import AI_MAX_COLUMNS, AI_MAX_ROWS, get_llm_model, FRONTEND_DIR, TM1_CONFIG
 from .config import public_tm1_config, update_tm1_config
 from .llm_models import load_llm_model_catalog, refresh_llm_model_catalog, validate_llm_selection
 from .ai.result_validators import (
     result_shape_issue as validate_result_shape,
     specific_focus_issue as validate_specific_focus,
     statement_line_item_issue as validate_statement_line_items,
-    default_filter_issue as validate_default_filter,
+    default_filter_warning as validate_default_filter_warning,
     account_dim_choice_issue as validate_account_dim_choice,
+    static_mdx_schema_issue as validate_static_mdx_schema,
 )
 from .ai.finance_semantics import build_finance_semantic_profile
 from .email_service import send_analysis_email
@@ -64,6 +69,7 @@ from .tm1 import (
     get_last_synced_at,
     get_named_attribute_map,
     lookup_element_dim,
+    resolve_question_members,
     init_schema_db,
     sync_schema,
 )
@@ -91,6 +97,7 @@ _CONNECTION_ERROR_PATTERNS = (
 # Generated once by the AI provider on first request and held in memory.
 # Cleared whenever sync-schema runs so suggestions stay current after a model change.
 _suggestions_cache: list[str] | None = None
+_suggestions_lock = threading.Lock()
 
 # ── TM1 health state ──────────────────────────────────────────────────────────
 # Status is updated passively whenever a real TM1 API call succeeds or fails.
@@ -156,36 +163,31 @@ def index():
     )
 
 
-@app.get("/{asset_name}")
-def frontend_asset(asset_name: str):
-    allowed_assets = {
-        "frontend.tailwind.js",
-        "config.js", "markdown.js", "charts.js", "table.js",
-        "store.js", "share.js", "ui.js", "sidebar.js",
-        "cubes.js", "render.js", "api.js", "main.js",
-    }
-    if asset_name not in allowed_assets:
+_ALLOWED_JS_ASSETS = frozenset({
+    "frontend.tailwind.js",
+    "config.js", "markdown.js", "charts.js", "table.js",
+    "store.js", "share.js", "ui.js", "sidebar.js",
+    "cubes.js", "render.js", "api.js", "main.js",
+})
+
+
+def _serve_js(asset_name: str) -> FileResponse:
+    if asset_name not in _ALLOWED_JS_ASSETS:
         raise HTTPException(404, "Not found")
     return FileResponse(
         FRONTEND_DIR / "js" / asset_name,
         headers={"Cache-Control": "no-store, max-age=0"},
     )
+
+
+@app.get("/{asset_name}")
+def frontend_asset(asset_name: str):
+    return _serve_js(asset_name)
 
 
 @app.get("/js/{asset_name}")
 def frontend_js_asset(asset_name: str):
-    allowed_assets = {
-        "frontend.tailwind.js",
-        "config.js", "markdown.js", "charts.js", "table.js",
-        "store.js", "share.js", "ui.js", "sidebar.js",
-        "cubes.js", "render.js", "api.js", "main.js",
-    }
-    if asset_name not in allowed_assets:
-        raise HTTPException(404, "Not found")
-    return FileResponse(
-        FRONTEND_DIR / "js" / asset_name,
-        headers={"Cache-Control": "no-store, max-age=0"},
-    )
+    return _serve_js(asset_name)
 
 
 @app.get("/js/vendor/{asset_name}")
@@ -248,7 +250,8 @@ def sync_schema_endpoint():
         _update_tm1_health("down")
         raise HTTPException(500, f"Schema sync failed: {exc}") from exc
     _update_tm1_health("up")
-    _suggestions_cache = None  # invalidate so next /api/suggestions regenerates
+    with _suggestions_lock:
+        _suggestions_cache = None  # invalidate so next /api/suggestions regenerates
     return {
         "success": True,
         "last_synced_at": get_last_synced_at(),
@@ -312,7 +315,8 @@ def save_tm1_config(req: TM1ConfigRequest):
         raise HTTPException(500, f"TM1 configuration save failed: {exc}") from exc
 
     _update_tm1_health(tm1_status, tm1_name)
-    _suggestions_cache = None
+    with _suggestions_lock:
+        _suggestions_cache = None
     return {
         "success": True,
         "config": config,
@@ -407,37 +411,27 @@ def _build_dim_roles_map(schema_summary: dict) -> dict[str, str]:
     scenario / time / measure / data_source / metadata / unclassified).
     The map is consumed by the planner and validators to decide which dims
     accept the user's entity-name mentions."""
-    from .ai.dim_roles import classify_dim
-    out: dict[str, str] = {}
-    for cube in schema_summary.get("cubes") or []:
-        for dim in cube.get("dimensions") or []:
-            if isinstance(dim, str):
-                # Schema summary sometimes flattens dims to just their names.
-                # Fall back to a name-only classify.
-                synthetic = {"name": dim}
-                out.setdefault(dim, classify_dim(synthetic))
-                continue
-            name = str(dim.get("name", "")).strip() if isinstance(dim, dict) else ""
-            if not name or name in out:
-                continue
-            out[name] = classify_dim(dim)
-    return out
+    from .ai.dim_roles import build_dim_roles_map
+    return build_dim_roles_map(schema_summary)
 
 
 @app.get("/api/suggestions")
 def get_suggestions():
     """Return 3 AI-generated suggested questions based on the connected TM1 cubes."""
     global _suggestions_cache
-    if _suggestions_cache is not None:
-        return {"suggestions": _suggestions_cache}
+    with _suggestions_lock:
+        if _suggestions_cache is not None:
+            return {"suggestions": _suggestions_cache}
     try:
         cubes = get_cubes_with_descriptions()
     except RuntimeError as exc:
         _update_tm1_health("down")
         raise HTTPException(500, str(exc)) from exc
     _update_tm1_health("up")
-    _suggestions_cache = generate_homepage_suggestions(cubes)
-    return {"suggestions": _suggestions_cache}
+    suggestions = generate_homepage_suggestions(cubes)
+    with _suggestions_lock:
+        _suggestions_cache = suggestions
+    return {"suggestions": suggestions}
 
 
 @app.get("/api/views")
@@ -461,13 +455,29 @@ def _source_for_ai(s: dict) -> dict:
     can be 5–10× larger than the pivoted equivalent.
     """
     fp: dict = s.get("_full_preview") or s.get("structured_preview") or {}
+    columns = list(fp.get("columns", []) or [])[:AI_MAX_COLUMNS]
+    rows = list(fp.get("rows", []) or [])[:AI_MAX_ROWS]
     return {
         "cube":            s["cube"],
         "reasoning":       s.get("reasoning", ""),
         "data_row_count":  s["data_row_count"],
         "applied_filters": s.get("applied_filters", []),
-        "data":            {**fp, "rows": fp.get("rows", [])[:AI_MAX_ROWS]},
+        "data":            {**fp, "columns": columns, "rows": rows},
     }
+
+
+def _analysis_fallback_message(error: str) -> str:
+    text = error.lower()
+    if "rate_limit" in text or "rate limit" in text or "tokens per minute" in text:
+        return (
+            "I found matching TM1 data, but the AI narrative step hit the LLM "
+            "rate limit. The table and export are still available above; retry "
+            "after a short pause or narrow the query to fewer rows/columns."
+        )
+    return (
+        "I found matching TM1 data, but the AI narrative step failed. The table "
+        "and export are still available above."
+    )
 
 
 def _cube_context_for_selection(cubes: list[dict]) -> list[dict]:
@@ -623,6 +633,7 @@ def _execute_mdx_with_repair(
     history: list[dict],
     similar_queries: list[dict],
     model_profile: dict | None,
+    grounded_members: list[dict] | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, object], str, list[str]]:
     """Execute generated MDX, asking the AI provider to repair it after TM1 errors."""
     attempts: list[str] = []
@@ -632,9 +643,12 @@ def _execute_mdx_with_repair(
     for attempt in range(1, _MAX_MDX_ATTEMPTS + 1):
         try:
             validate_generated_mdx(current_mdx, cube)
-            default_issue = validate_default_filter(question, schema, current_mdx, model_profile=model_profile)
-            if default_issue:
-                raise RuntimeError(default_issue)
+            static_issue = validate_static_mdx_schema(current_mdx, schema)
+            if static_issue:
+                raise RuntimeError(static_issue)
+            default_warning = validate_default_filter_warning(question, schema, current_mdx, model_profile=model_profile)
+            if default_warning:
+                attempts.append(default_warning)
             account_choice_issue = validate_account_dim_choice(question, schema, current_mdx)
             if account_choice_issue:
                 raise RuntimeError(account_choice_issue)
@@ -665,6 +679,7 @@ def _execute_mdx_with_repair(
                     history,
                     similar_queries=similar_queries,
                     model_profile=model_profile,
+                    grounded_members=grounded_members,
                 )
             except RuntimeError as repair_exc:
                 attempts.append(f"repair {attempt}: {repair_exc}")
@@ -715,13 +730,44 @@ def _looks_like_connection_error(message: str) -> bool:
     return any(pattern in text for pattern in _CONNECTION_ERROR_PATTERNS)
 
 
-def _analyze_sse_gen(req: QuestionRequest):
+def _client_disconnected(request: Request | None) -> bool:
+    if request is None:
+        return False
+    try:
+        return bool(from_thread.run(request.is_disconnected))
+    except RuntimeError:
+        return False
+
+
+def _effective_question_from_history(question: str, history: list[dict] | None) -> str:
+    """Carry only the last turn when the current text looks like a follow-up."""
+    if not history:
+        return question
+    text = question.strip()
+    lowered = text.lower()
+    followup = (
+        len(re.findall(r"[A-Za-z0-9]+", text)) <= 5
+        or any(term in lowered for term in (
+            "same", "this", "that", "those", "it",
+            "show by", "break down", "breakdown", "by month", "by quarter",
+            "by year", "add ", "what about", "compare with",
+        ))
+    )
+    if not followup:
+        return question
+    previous = str((history[-1] or {}).get("question", "")).strip()
+    return " ".join(part for part in (previous, question) if part)
+
+
+def _analyze_sse_gen(req: QuestionRequest, request: Request | None = None):
     """Sync SSE generator for /api/analyze. Yields `data: {...}\n\n` strings."""
 
     def evt(data: dict) -> str:
         return f"data: {_json.dumps(data, ensure_ascii=False)}\n\n"
 
     question = req.question.strip()
+    if _client_disconnected(request):
+        return
 
     # Fast-path: clarification (no TM1 needed)
     if not req.history and is_unclear_question(question):
@@ -737,6 +783,8 @@ def _analyze_sse_gen(req: QuestionRequest):
         return
 
     model_profile = _load_current_model_profile()
+    if _client_disconnected(request):
+        return
     clarification = find_clarifications(question, req.history, model_profile)
     if clarification:
         yield evt({"type": "done", "data": {
@@ -778,11 +826,7 @@ def _analyze_sse_gen(req: QuestionRequest):
     except RuntimeError as exc:
         yield evt({"type": "error", "message": str(exc)}); return
 
-    if req.history:
-        prior = [m.get("question", "") for m in req.history]
-        effective_question = " ".join(q for q in prior + [question] if q.strip())
-    else:
-        effective_question = question
+    effective_question = _effective_question_from_history(question, req.history)
 
     user_scoped = bool(req.selected_cubes)
     if user_scoped:
@@ -833,6 +877,8 @@ def _analyze_sse_gen(req: QuestionRequest):
             yield evt({"type": "error", "message": "AI did not return a valid cube selection"}); return
 
     # Step 2: fetch data from each cube
+    if _client_disconnected(request):
+        return
     yield evt({"type": "step", "step": 2})
     sources: list[dict[str, Any]] = []
     skipped_sources: list[dict[str, Any]] = []
@@ -840,6 +886,8 @@ def _analyze_sse_gen(req: QuestionRequest):
 
     cube_limit = 10 if user_scoped else 3
     for selected in selected_cubes[:cube_limit]:
+        if _client_disconnected(request):
+            return
         cube = str(selected.get("cube", "")).strip()
         source_reasoning = str(selected.get("reasoning", "")).strip()
         if not cube or cube in seen_cubes:
@@ -869,7 +917,15 @@ def _analyze_sse_gen(req: QuestionRequest):
         focused_schema = prepare_schema_for_query(
             schema, mdx_question, intent=intent, model_profile=model_profile
         )
-        print(f"[query-intent] {cube} primary={intent['primary']} sec={intent['secondaries']} conf={intent['confidence']:.2f}", flush=True)
+        _log.info("[query-intent] %s primary=%s sec=%s conf=%.2f", cube, intent["primary"], intent["secondaries"], intent["confidence"])
+        cube_dims = [
+            str(d.get("name", ""))
+            for d in schema.get("dimensions", [])
+            if d.get("name")
+        ]
+        grounded_members = resolve_question_members(mdx_question, candidate_dims=cube_dims)
+        if grounded_members:
+            _log.info("[member-grounding] %s candidates=%d", cube, len(grounded_members))
 
         plan = None
         try:
@@ -881,11 +937,11 @@ def _analyze_sse_gen(req: QuestionRequest):
                 element_matches=element_matches,
             )
         except Exception as exc:  # noqa: BLE001 - planner must never break the request
-            print(f"[mdx-planner] error: {exc}", flush=True)
+            _log.warning("[mdx-planner] error: %s", exc)
 
         if plan is not None:
             mdx = plan.mdx
-            print(f"[mdx-planner] {cube} pattern={plan.pattern} conf={plan.confidence:.2f}", flush=True)
+            _log.info("[mdx-planner] %s pattern=%s conf=%.2f", cube, plan.pattern, plan.confidence)
         else:
             try:
                 mdx = generate_cube_mdx(
@@ -894,6 +950,7 @@ def _analyze_sse_gen(req: QuestionRequest):
                     req.history,
                     similar_queries=similar,
                     model_profile=model_profile,
+                    grounded_members=grounded_members,
                 )
             except RuntimeError as exc:
                 skipped_sources.append({
@@ -914,6 +971,7 @@ def _analyze_sse_gen(req: QuestionRequest):
                 req.history,
                 similar,
                 model_profile,
+                grounded_members,
             )
         except RuntimeError as exc:
             # "Cannot execute MDX at host:port" → connection failure
@@ -1012,6 +1070,8 @@ def _analyze_sse_gen(req: QuestionRequest):
         yield evt(payload); return
 
     # Step 3: signal data ready, send sources to frontend
+    if _client_disconnected(request):
+        return
     yield evt({"type": "step", "step": 3})
     _internal = {"analysis_rows", "_full_preview"}
     response_sources = [{k: v for k, v in s.items() if k not in _internal} for s in sources]
@@ -1026,10 +1086,12 @@ def _analyze_sse_gen(req: QuestionRequest):
     full_text: str = ""
     try:
         for chunk in stream_financial_analysis(question, ai_sources, skipped_sources, req.history):
+            if _client_disconnected(request):
+                return
             full_text += chunk
             yield evt({"type": "chunk", "text": chunk})
     except RuntimeError as exc:
-        yield evt({"type": "error", "message": str(exc)}); return
+        full_text = _analysis_fallback_message(str(exc))
 
     analysis, suggestions = _parse_suggestions(full_text)
     first = sources[0]
@@ -1051,9 +1113,9 @@ def _analyze_sse_gen(req: QuestionRequest):
 
 
 @app.post("/api/analyze")
-def analyze(req: QuestionRequest):
+def analyze(req: QuestionRequest, request: Request):
     return StreamingResponse(
-        _analyze_sse_gen(req),
+        _analyze_sse_gen(req, request),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -1071,11 +1133,13 @@ def export_excel(payload: dict[str, Any] = Body(...)):
         )
     except Exception as exc:
         raise HTTPException(500, str(exc)) from exc
-    filename = str(payload.get("cube", "export")).replace("/", "-") + ".xlsx"
+    raw_name = str(payload.get("cube", "export") or "export")
+    safe_name = re.sub(r'[^\w\-. ]', '_', raw_name).strip("_").strip() or "export"
+    filename = safe_name + ".xlsx"
     return Response(
         content=xlsx,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f"attachment; filename=\"{filename}\""},
     )
 
 

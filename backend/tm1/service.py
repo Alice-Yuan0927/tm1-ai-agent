@@ -49,7 +49,7 @@ def _guess_measure_dimension(rows: list[dict]) -> str | None:
     dimensions = list(rows[0].get("_dimensions", {}).keys())
     for dimension in dimensions:
         lowered = dimension.lower()
-        if lowered.startswith("m ") or "measure" in lowered or "cost" in lowered and lowered.startswith("m"):
+        if lowered.startswith("m ") or "measure" in lowered or ("cost" in lowered and lowered.startswith("m")):
             return dimension
 
     varying = [

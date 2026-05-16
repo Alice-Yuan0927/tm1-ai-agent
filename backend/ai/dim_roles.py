@@ -70,7 +70,7 @@ def classify_dim_by_content(dim: dict) -> str | None:
     if not desc_blob:
         return None
     cv_hits = sum(1 for tok in _CURRENCY_VIEW_SIGNAL_TOKENS if tok in desc_blob)
-    if cv_hits >= 2:
+    if cv_hits >= 1:
         return "currency_view"
 
     return None
@@ -162,6 +162,22 @@ def classify_dims(dimensions: list[dict]) -> dict[str, str]:
         if not name:
             continue
         out[name] = classify_dim(dim)
+    return out
+
+
+def build_dim_roles_map(schema_summary: dict) -> dict[str, str]:
+    """Classify every distinct dim in a schema summary by semantic role."""
+    out: dict[str, str] = {}
+    for cube in schema_summary.get("cubes") or []:
+        for dim in cube.get("dimensions") or []:
+            if isinstance(dim, str):
+                synthetic = {"name": dim}
+                out.setdefault(dim, get_dim_role(synthetic))
+                continue
+            name = str(dim.get("name", "")).strip() if isinstance(dim, dict) else ""
+            if not name or name in out:
+                continue
+            out[name] = get_dim_role(dim)
     return out
 
 
