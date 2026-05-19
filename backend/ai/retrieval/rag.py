@@ -12,11 +12,12 @@ query_history  FTS5 virtual table  - full-text search on question + cube
 query_meta     regular table       - timestamp and row_count per entry
 """
 
+import json
 import re
 import sqlite3
 from pathlib import Path
 
-_DB_PATH = Path(__file__).parent.parent / "query_history.db"
+_DB_PATH = Path(__file__).parent.parent.parent / "query_history.db"
 
 
 # ---------------------------------------------------------------------------
@@ -38,8 +39,9 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS query_meta (
                 rowid    INTEGER PRIMARY KEY,
                 cube     TEXT,
-                created_at TEXT DEFAULT (datetime('now')),
-                row_count  INTEGER DEFAULT 0
+                created_at    TEXT DEFAULT (datetime('now')),
+                row_count     INTEGER DEFAULT 0,
+                grounded_json TEXT
             )
         """)
 
@@ -61,9 +63,16 @@ def _to_structural_template(mdx: str) -> str:
     )
 
 
-def save_query(question: str, cube: str, mdx: str, row_count: int = 0) -> None:
+def save_query(
+    question: str,
+    cube: str,
+    mdx: str,
+    row_count: int = 0,
+    grounded_members: list | None = None,
+) -> None:
     """Persist a structural template of a successful query for future few-shot use."""
     template = _to_structural_template(mdx)
+    grounded_json = json.dumps(grounded_members or [], ensure_ascii=False)
     with _connect() as conn:
         conn.execute(
             "INSERT INTO query_history(question, cube, mdx) VALUES (?, ?, ?)",
@@ -71,8 +80,8 @@ def save_query(question: str, cube: str, mdx: str, row_count: int = 0) -> None:
         )
         rowid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.execute(
-            "INSERT INTO query_meta(rowid, cube, row_count) VALUES (?, ?, ?)",
-            (rowid, cube, row_count),
+            "INSERT INTO query_meta(rowid, cube, row_count, grounded_json) VALUES (?, ?, ?, ?)",
+            (rowid, cube, row_count, grounded_json),
         )
 
 
@@ -95,7 +104,7 @@ def retrieve_similar(question: str, cube: str | None = None, limit: int = 3) -> 
         if cube:
             rows = conn.execute(
                 """
-                SELECT qh.question, qh.cube, qh.mdx
+                SELECT qh.question, qh.cube, qh.mdx, qm.grounded_json
                 FROM query_history qh
                 JOIN query_meta qm ON qm.rowid = qh.rowid
                 WHERE query_history MATCH ? AND qm.cube = ?
@@ -107,8 +116,9 @@ def retrieve_similar(question: str, cube: str | None = None, limit: int = 3) -> 
         else:
             rows = conn.execute(
                 """
-                SELECT question, cube, mdx
-                FROM query_history
+                SELECT qh.question, qh.cube, qh.mdx, qm.grounded_json
+                FROM query_history qh
+                JOIN query_meta qm ON qm.rowid = qh.rowid
                 WHERE query_history MATCH ?
                 ORDER BY rank
                 LIMIT ?
@@ -116,7 +126,16 @@ def retrieve_similar(question: str, cube: str | None = None, limit: int = 3) -> 
                 (terms, limit),
             ).fetchall()
 
-    return [{"question": q, "cube": c, "mdx": m} for q, c, m in rows]
+    results = []
+    for q, c, m, gj in rows:
+        entry: dict = {"question": q, "cube": c, "mdx": m}
+        if gj:
+            try:
+                entry["grounded_members"] = json.loads(gj)
+            except Exception:
+                pass
+        results.append(entry)
+    return results
 
 
 # ---------------------------------------------------------------------------

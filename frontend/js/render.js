@@ -93,23 +93,23 @@ function _planAssumptionsHtml(plan) {
 function _skippedSourceHtml(source, index) {
   const attempts = Array.isArray(source.mdx_attempts) && source.mdx_attempts.length
     ? `<details class="mt-2"><summary class="cursor-pointer font-medium">Repair attempts</summary>
-        <pre class="mt-1 max-h-44 overflow-auto whitespace-pre-wrap rounded-md bg-white/80 p-2 font-mono text-[11px] text-amber-900">${esc(source.mdx_attempts.join("\n"))}</pre>
+        <pre class="mt-1 max-h-44 max-w-full overflow-auto whitespace-pre-wrap break-all rounded-md bg-white/80 p-2 font-mono text-[11px] text-amber-900">${esc(source.mdx_attempts.join("\n"))}</pre>
       </details>`
     : "";
   const mdx = source.generated_mdx
     ? `<details class="mt-2"><summary class="cursor-pointer font-medium">Show MDX</summary>
-        <pre class="mt-1 max-h-56 overflow-auto whitespace-pre-wrap rounded-md bg-white/80 p-2 font-mono text-[11px] text-amber-900">${esc(source.generated_mdx)}</pre>
+        <pre class="mt-1 max-h-56 max-w-full overflow-auto whitespace-pre-wrap break-all rounded-md bg-white/80 p-2 font-mono text-[11px] text-amber-900">${esc(source.generated_mdx)}</pre>
       </details>`
-    : `<div class="mt-2 rounded-md bg-white/70 p-2 font-mono text-[11px] text-amber-700">No MDX generated for this source.</div>`;
-  return `<div class="rounded-md border border-amber-200 bg-white/70 p-3">
-    <div class="flex items-start justify-between gap-3">
-      <div>
+    : `<div class="mt-2 max-w-full break-all rounded-md bg-white/70 p-2 font-mono text-[11px] text-amber-700">No MDX generated for this source.</div>`;
+  return `<div class="min-w-0 rounded-md border border-amber-200 bg-white/70 p-3">
+    <div class="flex min-w-0 items-start justify-between gap-3">
+      <div class="min-w-0">
         <div class="text-[10px] font-semibold uppercase tracking-[0.08em] text-amber-600">Skipped source ${index + 1}</div>
-        <div class="mt-0.5 font-mono text-[12px] font-medium text-amber-900">${esc(source.cube || "")}</div>
+        <div class="mt-0.5 break-words font-mono text-[12px] font-medium text-amber-900">${esc(source.cube || "")}</div>
       </div>
-      <span class="shrink-0 rounded-full border border-amber-300 bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700">${esc(source.status || "skipped")}</span>
+      <span class="min-w-0 max-w-[70%] rounded-md border border-amber-300 bg-amber-100 px-2 py-0.5 text-left text-[10px] font-semibold leading-4 text-amber-700 break-all">${esc(source.status || "skipped")}</span>
     </div>
-    ${source.reasoning ? `<div class="mt-2 text-[11px] text-amber-700">${esc(source.reasoning)}</div>` : ""}
+    ${source.reasoning ? `<div class="mt-2 break-words text-[11px] text-amber-700">${esc(source.reasoning)}</div>` : ""}
     ${mdx}
     ${attempts}
   </div>`;
@@ -125,7 +125,7 @@ function _rowLabel(n) {
   return n === 1 ? "1 row" : `${Number(n).toLocaleString()} rows`;
 }
 
-function _tableSectionsHtml(sources, msgIdx) {
+function _tableSectionsHtml(sources, msgId) {
   return sources.map((source, index) => {
     const chartId   = `chart-${Date.now()}-${index}`;
     const total     = source.data_row_count || 0;
@@ -133,8 +133,8 @@ function _tableSectionsHtml(sources, msgIdx) {
     const previewText = preview >= total
       ? _rowLabel(total)
       : `${_rowLabel(preview)} of ${_rowLabel(total)}`;
-    const csvBtn = msgIdx != null
-      ? `<button type="button" data-xlsx="${msgIdx}-${index}" onclick="downloadExcel(${msgIdx},${index})"
+    const csvBtn = msgId != null
+      ? `<button type="button" data-action="download-excel" data-msg-id="${esc(msgId)}" data-src-idx="${index}"
            class="flex items-center gap-1 rounded-md border border-green-600 bg-white px-2 py-0.5 text-[11px] text-green-600 transition hover:bg-green-50">
            <i class="fa-solid fa-file-excel text-[9px]"></i> Download Excel
          </button>`
@@ -184,7 +184,7 @@ function streamingArticle(event, question) {
   </div>`;
 }
 
-function renderSingleMessage(data, msgIdx) {
+function renderSingleMessage(data) {
   if (data.type === "clarification") {
     return `<div class="mb-8 w-full">
       <div class="flex justify-end mb-3">
@@ -232,7 +232,7 @@ function renderSingleMessage(data, msgIdx) {
       </section>
       <section class="mb-5">
         <h2 class="mb-3 text-[17px] font-semibold text-cw-text">Data retrieved from TM1</h2>
-        ${_tableSectionsHtml(sources, msgIdx)}
+        ${_tableSectionsHtml(sources, data._id ?? null)}
       </section>
       <section>
         <div class="text-[15px] leading-8 text-cw-sub [&_strong]:font-semibold [&_strong]:text-cw-text [&_em]:italic">${renderMarkdown(data.analysis)}</div>
@@ -247,7 +247,7 @@ function renderSingleMessage(data, msgIdx) {
 function renderConversation() {
   setChatMode(true);
   updateShareStatus("");
-  document.getElementById("out").innerHTML = currentMessages.map((msg, i) => renderSingleMessage(msg, i)).join("");
+  document.getElementById("out").innerHTML = currentMessages.map(msg => renderSingleMessage(msg)).join("");
   bindFollowUpButtons();
   initCharts();
 }
@@ -261,6 +261,7 @@ function bindFollowUpButtons() {
 }
 
 function render(data) {
+  if (!data._id) data._id = newId();
   currentMessages = [data];
   currentResult = data;
   renderConversation();

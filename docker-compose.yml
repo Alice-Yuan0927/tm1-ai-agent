@@ -10,6 +10,8 @@ services:
       - ./frontend:/app/frontend
     environment:
       LLM_API_KEY: ${LLM_API_KEY}
+      LLM_EMBEDDING_API_KEY: ${LLM_EMBEDDING_API_KEY:-${LLM_embedding_api_key:-}}
+      LLM_embedding_api_key: ${LLM_embedding_api_key:-${LLM_EMBEDDING_API_KEY:-}}
       LLM_MODEL: ${LLM_MODEL:-}
       TM1_ADDRESS: ${TM1_ADDRESS:-host.docker.internal}
       TM1_PORT: ${TM1_PORT:-9510}

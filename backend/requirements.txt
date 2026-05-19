@@ -2,6 +2,7 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.0
 TM1py==2.1
 openai==1.99.9
+numpy>=1.26
 anthropic==0.55.0
 requests==2.32.3
 markdown==3.7

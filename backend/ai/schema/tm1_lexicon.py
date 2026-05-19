@@ -9,8 +9,9 @@ from __future__ import annotations
 import re
 
 STATEMENT_PATTERN = re.compile(
-    r"\b(p\s*&\s*l|p\s*and\s*l|profit\s+and\s+loss|income\s+statement|"
-    r"pnl|p\.?\s*&\s*l\.?\s*statement)\b",
+    r"(?:\b(?:p\s*&\s*l|p\s*and\s*l|profit\s+and\s+loss|income\s+statement|"
+    r"pnl|p\.?\s*&\s*l\.?\s*statement)\b|"
+    r"利润表|损益表|损益账|综合收益表)",
     re.IGNORECASE,
 )
 

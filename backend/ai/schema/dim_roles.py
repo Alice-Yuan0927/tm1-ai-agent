@@ -91,9 +91,12 @@ _ROLE_PATTERNS: list[tuple[str, list[str]]] = [
         # "Line Item" only when it's not a generic metadata dim
         r"^line\s+item$",
     ]),
-    # Counterparty / partner dims
+    # Counterparty / partner dims.
+    # "Intercompany Category" is a business_classifier (Trade/Dividend/Loan…),
+    # not individual IC counterparties — the negative lookahead prevents the
+    # "intercompany" token from stealing it before business_classifier can match.
     ("counterparty", [
-        r"\bintercompany\b", r"\bintercos?\b",
+        r"\bintercompany\b(?!\s+category\b)", r"\bintercos?\b",
         r"\bcounter[\s_-]?party\b", r"\bcpty\b",
         r"\bic\s+partner\b", r"\bpartner\b",
     ]),
@@ -154,17 +157,6 @@ def classify_dim(dim: dict) -> str:
     return "unclassified"
 
 
-def classify_dims(dimensions: list[dict]) -> dict[str, str]:
-    """Bulk classify a cube's dimensions. Returns {dim_name: role}."""
-    out: dict[str, str] = {}
-    for dim in dimensions:
-        name = str(dim.get("name", "")).strip()
-        if not name:
-            continue
-        out[name] = classify_dim(dim)
-    return out
-
-
 def build_dim_roles_map(schema_summary: dict) -> dict[str, str]:
     """Classify every distinct dim in a schema summary by semantic role."""
     out: dict[str, str] = {}
@@ -206,6 +198,12 @@ def get_dim_role(dim: dict, profile_roles: dict[str, str] | None = None) -> str:
     if dim.get("is_measure"):
         return "measure"
     if dim.get("is_time_dim"):
+        # "Period Type" dims (YTD / Current / Full Year) are business classifiers
+        # in TM1 even though they may be flagged is_time_dim=True by the server.
+        # Name-based check wins here because the elements are not calendar values.
+        _n = str(dim.get("name", "")).strip().lower()
+        if re.search(r"\bperiod[\s_-]type\b", _n):
+            return "business_classifier"
         return "time"
     content_role = classify_dim_by_content(dim)
     if content_role:

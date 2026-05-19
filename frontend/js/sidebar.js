@@ -91,7 +91,7 @@ function renderHistory() {
     const groupHeader = group === lastGroup ? "" :
       `<div class="px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.08em] text-cw-muted">${esc(group)}</div>`;
     lastGroup = group;
-    return `${groupHeader}<button type="button" class="mb-1 block w-full rounded-lg px-3 py-2.5 text-left transition hover:bg-cw-bg" onclick="openHistory('${esc(item.id)}')">
+    return `${groupHeader}<button type="button" class="mb-1 block w-full rounded-lg px-3 py-2.5 text-left transition hover:bg-cw-bg" data-action="open-history" data-id="${esc(item.id)}">
       <div class="truncate text-[13px] font-medium text-cw-text">${esc(first.question)}</div>
       <div class="mt-0.5 flex items-center justify-between gap-2 text-[11px] text-cw-muted">
         <span class="truncate">${latest.type === "clarification" ? "Clarification needed" : esc(latest.chosen_cube)}</span>

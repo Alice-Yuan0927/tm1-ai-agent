@@ -57,18 +57,42 @@ function _normalTable(preview, rowDimensions, measureColumns) {
   }).join("");
 
   const body = preview.rows.map(row => {
+    const rowLevel = _rowConsolLevel(preview, rowDimensions, row);
+    const rowTone = _hierarchyRowTone(rowLevel);
     const cells = headers.map((h, i) => {
       const isMeasure = i >= rowDimensions.length;
       const val   = row[h] ?? "";
+      const level = preview.row_hierarchy?.[h]?.[val] ?? 0;
+      const indent = !isMeasure && level > 0 ? ` style="padding-left:${12 + level * 18}px"` : "";
       const align = isMeasure
         ? "text-right font-mono text-cw-blueText"
-        : "text-left text-cw-text";
-      return `<td class="${align} whitespace-nowrap border-b border-cw-borderLow px-3 py-2">${fmt(val)}</td>`;
+        : `text-left ${rowLevel <= 1 ? "font-medium text-cw-text" : "text-cw-text"}`;
+      return `<td class="${align} ${rowTone.cell} whitespace-nowrap border-b border-cw-borderLow px-3 py-2"${indent}>${fmt(val)}</td>`;
     }).join("");
-    return `<tr class="last:[&_td]:border-b-0 hover:[&_td]:bg-cw-blueLite">${cells}</tr>`;
+    return `<tr class="last:[&_td]:border-b-0 ${rowTone.hover}">${cells}</tr>`;
   }).join("");
 
   return _tableWrap(head, body);
+}
+
+function _rowConsolLevel(preview, rowDimensions, row) {
+  const levels = rowDimensions
+    .map(dim => preview.row_hierarchy?.[dim]?.[row[dim]])
+    .filter(level => typeof level === "number");
+  return levels.length ? Math.min(...levels) : 3;
+}
+
+function _hierarchyRowTone(level) {
+  if (level <= 0) {
+    return { cell: "bg-slate-200/85", hover: "hover:[&_td]:bg-cw-blueLite" };
+  }
+  if (level === 1) {
+    return { cell: "bg-slate-100/90", hover: "hover:[&_td]:bg-cw-blueLite" };
+  }
+  if (level === 2) {
+    return { cell: "bg-slate-50/80", hover: "hover:[&_td]:bg-cw-blueLite" };
+  }
+  return { cell: "bg-white", hover: "hover:[&_td]:bg-cw-blueLite" };
 }
 
 // ── Transposed layout — measures become rows, original rows become columns ────

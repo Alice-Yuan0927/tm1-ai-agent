@@ -1,0 +1,99 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "tm1-ai-analyst"
+version = "0.1.0"
+requires-python = ">=3.11"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "import-linter>=2.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+# ── import-linter ─────────────────────────────────────────────────────────────
+# Run:  pip install import-linter && lint-imports
+# Or:   python -m importlinter
+#
+# Enforces the layered architecture documented in docs/ARCHITECTURE.md
+
+[tool.importlinter]
+root_packages = ["backend"]
+
+[[tool.importlinter.contracts]]
+name = "routes must not import from each other (except helpers)"
+type = "forbidden"
+source_modules = [
+    "backend.routes.health",
+    "backend.routes.analyze",
+    "backend.routes.export",
+    "backend.routes.email",
+    "backend.routes.assets",
+]
+# config.py is allowed to import clear_suggestions_cache from schema.py;
+# all other cross-route imports are forbidden.
+forbidden_modules = [
+    "backend.routes.health",
+    "backend.routes.analyze",
+    "backend.routes.export",
+    "backend.routes.email",
+    "backend.routes.assets",
+    "backend.routes.schema",
+    "backend.routes.config",
+]
+
+[[tool.importlinter.contracts]]
+name = "ai must not import from routes or services"
+type = "forbidden"
+source_modules = ["backend.ai"]
+forbidden_modules = [
+    "backend.routes",
+    "backend.services",
+]
+
+[[tool.importlinter.contracts]]
+name = "services must not import from routes"
+type = "forbidden"
+source_modules = ["backend.services"]
+forbidden_modules = ["backend.routes"]
+
+[[tool.importlinter.contracts]]
+name = "tm1 must not import from ai"
+type = "forbidden"
+source_modules = ["backend.tm1"]
+forbidden_modules = ["backend.ai"]
+
+[[tool.importlinter.contracts]]
+name = "provider-specific code stays in ai.providers"
+type = "forbidden"
+source_modules = [
+    "backend.ai.intent.attribute_intent",
+    "backend.ai.intent.clarification",
+    "backend.ai.intent.cube_selection",
+    "backend.ai.intent.preflight",
+    "backend.ai.intent.query_intent",
+    "backend.ai.mdx.context",
+    "backend.ai.mdx.directives",
+    "backend.ai.mdx.generation",
+    "backend.ai.mdx.normalize",
+    "backend.ai.mdx.planner",
+    "backend.ai.output.conversation",
+    "backend.ai.output.narrative",
+    "backend.ai.output.semantic_profile",
+    "backend.ai.prompts.prompt_rules",
+    "backend.ai.retrieval.rag",
+    "backend.ai.schema.dim_roles",
+    "backend.ai.schema.finance_semantics",
+    "backend.ai.schema.result_validators",
+    "backend.ai.schema.tm1_lexicon",
+]
+forbidden_modules = [
+    "openai",
+    "anthropic",
+]

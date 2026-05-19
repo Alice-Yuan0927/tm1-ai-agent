@@ -1,8 +1,8 @@
 import json
 from pathlib import Path
 
-from backend.ai.mdx_planner import try_plan_mdx
-from backend.ai.result_validators import static_mdx_schema_issue
+from backend.ai.mdx.planner import try_plan_mdx
+from backend.ai.schema.result_validators import static_mdx_schema_issue
 
 
 def _cases():

@@ -35,49 +35,49 @@
     "period": [
       "Year",
       "Month",
-      "Scenario",
-      "Period Type"
+      "Period Type",
+      "Scenario"
     ],
     "entity": [
       "Company",
       "Group",
-      "Consol Profile Company"
+      "Company Reporting"
     ],
     "account": [
       "Account",
       "Account Report",
       "Account Disclosure",
-      "Consol Profile Account"
+      "SLIM Account"
     ],
-    "segment": [
-      "Segment 1",
-      "Segment 2",
-      "Segment 3",
-      "Segment 4"
+    "journal entry": [
+      "Consol GL Company Entry",
+      "Consol GL Group Entry",
+      "Entry ID",
+      "Line Item"
+    ],
+    "budget": [
+      "SLIM Budget PnL Staging",
+      "BUD",
+      "Scenario"
+    ],
+    "forecast": [
+      "SLIM Forecast PnL",
+      "FCST",
+      "Version",
+      "Scenario"
     ],
     "reconciliation": [
       "Consol Reconciliation Check Company",
       "Consol Reconciliation Check Group",
       "Reconciliation Item"
-    ],
-    "budget forecast": [
-      "SLIM Budget PnL Staging",
-      "SLIM Forecast PnL",
-      "Scenario",
-      "Version"
-    ],
-    "data load status": [
-      "Consol Track Report Data Load",
-      "Status",
-      "Latest Time",
-      "Data Type"
     ]
   },
   "metric_mappings": {
-    "consolidated amount": {
+    "financial amount": {
       "preferred_cubes": [
         "Consol GL Group",
-        "Consol GL Group Reporting"
+        "Consol GL Company",
+        "SLIM Forecast PnL"
       ],
       "preferred_measures": [
         "Amount",
@@ -85,42 +85,10 @@
         "Amount(m)"
       ],
       "preferred_dimensions": [
-        "Scenario",
-        "Year",
-        "Month",
-        "Group",
-        "Account"
-      ]
-    },
-    "company amount": {
-      "preferred_cubes": [
-        "Consol GL Company"
-      ],
-      "preferred_measures": [
-        "Amount",
-        "CB",
-        "OB"
-      ],
-      "preferred_dimensions": [
-        "Scenario",
-        "Year",
-        "Month",
+        "Account",
         "Company",
-        "Account"
-      ]
-    },
-    "elimination amount": {
-      "preferred_cubes": [
-        "Consol GL Elimination Reconciliation",
-        "Consol GL Group Entry"
-      ],
-      "preferred_measures": [
-        "Amount"
-      ],
-      "preferred_dimensions": [
-        "Elimination Type",
-        "Intercompany Category",
-        "Company"
+        "Year",
+        "Month"
       ]
     },
     "fx rate": {
@@ -135,9 +103,7 @@
       "preferred_dimensions": [
         "Currency From",
         "Currency To",
-        "FX Rate Type",
-        "Year",
-        "Month"
+        "FX Rate Type"
       ]
     },
     "ownership percentage": {
@@ -152,8 +118,22 @@
       "preferred_dimensions": [
         "Group",
         "Company",
-        "Scenario",
-        "Year"
+        "Scenario"
+      ]
+    },
+    "elimination amount": {
+      "preferred_cubes": [
+        "Consol GL Elimination Reconciliation",
+        "Consol GL Group Entry"
+      ],
+      "preferred_measures": [
+        "Amount",
+        "Adj Amount"
+      ],
+      "preferred_dimensions": [
+        "Elimination Type",
+        "Intercompany",
+        "Company"
       ]
     },
     "opening balance": {
@@ -163,13 +143,14 @@
       ],
       "preferred_measures": [
         "OB",
-        "OB - Adj"
+        "OB - Adj",
+        "OB - Load"
       ],
       "preferred_dimensions": [
-        "Scenario",
+        "Account",
+        "Company",
         "Year",
-        "Month",
-        "Account"
+        "Month"
       ]
     },
     "closing balance": {
@@ -181,31 +162,32 @@
         "CB"
       ],
       "preferred_dimensions": [
-        "Scenario",
+        "Account",
+        "Company",
         "Year",
-        "Month",
-        "Account"
+        "Month"
       ]
     },
-    "forecast amount": {
+    "debit credit": {
       "preferred_cubes": [
-        "SLIM Forecast PnL"
+        "Consol GL Company Entry",
+        "Consol GL Group Entry"
       ],
       "preferred_measures": [
-        "Amount",
-        "Amount YTD"
+        "Dr",
+        "Cr",
+        "Balance"
       ],
       "preferred_dimensions": [
-        "Scenario",
-        "Version",
-        "Year",
-        "Month",
+        "Account",
+        "Entry ID",
         "Company"
       ]
     },
-    "budget amount": {
+    "budget vs actual": {
       "preferred_cubes": [
-        "SLIM Budget PnL Staging"
+        "SLIM Budget PnL Staging",
+        "SLIM Forecast PnL"
       ],
       "preferred_measures": [
         "Amount"
@@ -214,45 +196,56 @@
         "Scenario",
         "Year",
         "Month",
-        "Company",
-        "SLIM Account"
+        "Company"
       ]
     },
-    "reconciliation value": {
+    "reconciliation check": {
       "preferred_cubes": [
         "Consol Reconciliation Check Group",
         "Consol Reconciliation Check Company"
       ],
       "preferred_measures": [
         "Value",
-        "Value(k)",
         "R1 Value",
-        "R2 Value"
+        "R2 Value",
+        "Known Variance"
       ],
       "preferred_dimensions": [
         "Reconciliation Item",
-        "Group",
         "Company",
-        "Year",
-        "Month"
+        "Group"
       ]
     },
-    "journal entry": {
+    "data load status": {
       "preferred_cubes": [
-        "Consol GL Company Entry",
-        "Consol GL Group Entry"
+        "Consol Track Report Data Load"
       ],
       "preferred_measures": [
-        "Amount",
-        "Dr",
-        "Cr",
-        "Balance"
+        "Status",
+        "Count",
+        "Latest Time",
+        "Latest User"
       ],
       "preferred_dimensions": [
-        "Entry ID",
         "Company",
-        "Account",
+        "Data Type",
         "Scenario"
+      ]
+    },
+    "period control": {
+      "preferred_cubes": [
+        "Consol Period Control"
+      ],
+      "preferred_measures": [
+        "Close",
+        "Freeze",
+        "Status"
+      ],
+      "preferred_dimensions": [
+        "Company",
+        "Control Step",
+        "Scenario",
+        "Year"
       ]
     },
     "rounding adjustment": {
@@ -262,11 +255,11 @@
       "preferred_measures": [
         "Adjustment",
         "Adjusted",
-        "Check Value 01"
+        "Comparison"
       ],
       "preferred_dimensions": [
-        "Rounding Check Item",
         "Company",
+        "Rounding Check Item",
         "Year",
         "Month"
       ]
@@ -281,72 +274,88 @@
         "multi-entity rollup"
       ],
       "avoid_for": [
-        "individual journal entry detail",
-        "elimination rule setup"
+        "single entity detail",
+        "journal entry drill-through"
       ]
     },
     "Consol GL Company": {
       "role": "Entity-level financial data in entity currency",
       "best_for": [
-        "single entity reporting",
-        "entity contribution analysis"
+        "single company financials",
+        "entity contribution",
+        "TB analysis"
       ],
       "avoid_for": [
         "group consolidated totals",
-        "intercompany reconciliation"
+        "elimination analysis"
       ]
     },
-    "Consol GL Group Reporting": {
-      "role": "Group financials with reporting perspective and reference period support",
+    "Consol GL Group Entry": {
+      "role": "Detailed journal entries at group level including eliminations",
       "best_for": [
-        "management reporting",
-        "drill-to-entity",
-        "multi-period comparison"
+        "elimination entry detail",
+        "adjustment journals",
+        "entry audit"
       ],
       "avoid_for": [
-        "raw data load",
-        "elimination rule configuration"
+        "high-level group summaries",
+        "FX rate queries"
+      ]
+    },
+    "Consol GL Company Entry": {
+      "role": "Detailed journal entries at company level",
+      "best_for": [
+        "company-level entry detail",
+        "TB upload review",
+        "adjustment tracking"
+      ],
+      "avoid_for": [
+        "group consolidated reporting",
+        "ownership queries"
       ]
     },
     "Consol GL Elimination Reconciliation": {
-      "role": "Intercompany elimination reconciliation by currency and elimination type",
+      "role": "Intercompany elimination reconciliation by currency and entity pair",
       "best_for": [
-        "ICP matching",
-        "elimination variance analysis"
+        "ICP reconciliation",
+        "elimination variance",
+        "intercompany matching"
       ],
       "avoid_for": [
-        "standalone entity reporting",
-        "budget planning"
+        "non-intercompany accounts",
+        "budget analysis"
       ]
     },
     "Consol Definition Group": {
-      "role": "Group structure and ownership percentage definitions",
+      "role": "Group structure and ownership percentages by scenario/period",
       "best_for": [
-        "ownership queries",
-        "consolidation method lookup",
+        "ownership structure",
+        "consolidation method",
         "group hierarchy"
       ],
       "avoid_for": [
         "financial amounts",
-        "journal entries"
+        "account-level analysis"
       ]
     },
     "Consol Definition Elimination": {
-      "role": "Elimination rule definitions per account and entity pair",
+      "role": "Elimination rules and flags by account and entity",
       "best_for": [
-        "elimination rule review",
-        "plug account lookup"
+        "elimination rule setup",
+        "plug account mapping",
+        "elimination configuration"
       ],
       "avoid_for": [
-        "actual financial balances",
+        "actual financial data",
         "FX rates"
       ]
     },
     "FX Rate": {
       "role": "Foreign exchange rates by currency pair, type, and period",
       "best_for": [
-        "rate lookup",
-        "currency conversion reference"
+        "FX rate lookup",
+        "currency conversion rates",
+        "rate comparison"
       ],
       "avoid_for": [
         "financial balances",
@@ -354,58 +363,86 @@
       ]
     },
     "SLIM Forecast PnL": {
-      "role": "Forecast P&L data with version control",
+      "role": "Forecast P&L data with versioning by company and segment",
       "best_for": [
-        "forecast vs actual",
-        "forecast trend analysis"
+        "forecast analysis",
+        "budget vs forecast",
+        "version comparison"
       ],
       "avoid_for": [
         "balance sheet items",
-        "elimination entries"
+        "consolidation eliminations"
       ]
     },
     "SLIM Budget PnL Staging": {
-      "role": "Budget P&L staging data by entity and segment",
+      "role": "Budget P&L staging data by company and segment",
       "best_for": [
+        "budget loading",
         "budget vs actual",
-        "budget loading review"
+        "SLIM account mapping"
       ],
       "avoid_for": [
-        "consolidated group totals",
-        "intercompany eliminations"
+        "consolidated group data",
+        "elimination entries"
       ]
     },
     "Consol Reconciliation Check Group": {
-      "role": "Automated reconciliation checks at group level",
+      "role": "Group-level reconciliation checks and variance monitoring",
       "best_for": [
-        "data quality checks",
-        "consolidation sign-off"
+        "consolidation quality checks",
+        "group reconciliation status",
+        "variance thresholds"
       ],
       "avoid_for": [
-        "financial reporting",
-        "FX conversion"
-      ]
-    },
-    "Consol Track Report Data Load": {
-      "role": "Tracks data load status and submission history by company",
-      "best_for": [
-        "data submission monitoring",
-        "load audit trail"
-      ],
-      "avoid_for": [
-        "financial analysis",
-        "elimination review"
+        "detailed transaction data",
+        "FX rates"
       ]
     },
     "Consol Period Control": {
       "role": "Period open/close and freeze status by company and step",
       "best_for": [
-        "period status check",
-        "close process monitoring"
+        "period status monitoring",
+        "close process tracking",
+        "workflow control"
       ],
       "avoid_for": [
         "financial amounts",
-        "FX rates"
+        "account analysis"
+      ]
+    },
+    "Consol Track Report Data Load": {
+      "role": "Tracks data load history and status by company and data type",
+      "best_for": [
+        "data load monitoring",
+        "submission status",
+        "audit trail"
+      ],
+      "avoid_for": [
+        "financial reporting",
+        "consolidation calculations"
+      ]
+    },
+    "Consol GL Group Reporting": {
+      "role": "Group financials with reporting perspective and reference measures",
+      "best_for": [
+        "management reporting",
+        "drill-to-entity",
+        "multi-period comparison"
+      ],
+      "avoid_for": [
+        "entry-level detail",
+        "elimination setup"
+      ]
+    },
+    "Consol Parameter": {
+      "role": "System configuration parameters for consolidation model",
+      "best_for": [
+        "model configuration lookup",
+        "account parameter reference"
+      ],
+      "avoid_for": [
+        "financial data queries",
+        "period analysis"
       ]
     }
   },
@@ -421,14 +458,14 @@
     "used_real_current_date": false
   },
   "selection_guidance": [
-    "Always filter Scenario, Year, and Month for financial cubes; default to current_period_defaults when not specified.",
-    "Use 'Consol GL Group' for consolidated group reporting; use 'Consol GL Company' for single-entity analysis.",
-    "For intercompany elimination analysis, prefer 'Consol GL Elimination Reconciliation' with Elimination Type and Intercompany Category filters.",
-    "When querying ownership or consolidation method, use 'Consol Definition Group' rather than GL cubes.",
-    "Period Type dimension has only 'Current' and 'YTD'; always specify which is needed for balance-type accounts.",
-    "For forecast questions, check Version dimension in 'SLIM Forecast PnL'; default to FINAL unless user specifies a draft version.",
-    "Segment dimensions (1–4) represent cost centre, property/hotel, project, and sub-segment hierarchies respectively.",
-    "Reconciliation and rounding check cubes are diagnostic; do not use them as primary financial data sources.",
+    "Use 'Consol GL Group' for consolidated group-level reporting; use 'Consol GL Company' for single-entity analysis.",
+    "Always filter by Scenario, Year, and Month; default to ACT, current_year, and current_month from system parameters.",
+    "For elimination analysis prefer 'Consol GL Elimination Reconciliation' or 'Consol GL Group Entry' with Elim data source.",
+    "Use Period Type 'Current' for monthly amounts and 'YTD' for year-to-date totals.",
+    "When querying FX rates, always specify Currency From, Currency To, and FX Rate Type dimensions.",
+    "For forecast vs budget comparisons use SLIM Forecast PnL and SLIM Budget PnL Staging with matching Scenario filters.",
+    "Ownership and consolidation method questions should use Consol Definition Group cube.",
+    "Reconciliation and data quality questions should use Consol Reconciliation Check Group or Company cubes.",
     "For financial statement questions, use finance_semantics to choose the matched cube and put the mapped line_item_dimension on ROWS."
   ],
   "chart_guidance": {

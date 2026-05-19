@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from typing import TypedDict
 
-from .tm1_lexicon import CURRENCY_VIEW_PATTERNS, STATEMENT_INTENTS, STATEMENT_SECTION_VOCAB
+from ..schema.tm1_lexicon import CURRENCY_VIEW_PATTERNS, STATEMENT_INTENTS, STATEMENT_SECTION_VOCAB
 
 class QueryIntent(TypedDict):
     primary: str
@@ -45,10 +45,10 @@ def _detect_currency_view(question: str) -> str:
 # matches go to secondaries. Patterns are matched against lowercased question.
 _INTENT_PATTERNS: list[tuple[str, str]] = [
     # Financial statements
-    (r"\b(p\s*&\s*l|p\s+and\s+l|profit\s+and\s+loss|income\s+statement|pnl|p\.?\s*&\s*l\.?\s*statement)\b", "income_statement"),
-    (r"\b(balance\s+sheet|statement\s+of\s+financial\s+position|bs)\b", "balance_sheet"),
-    (r"\b(cash\s+flow|cashflow|statement\s+of\s+cash\s+flows)\b", "cash_flow"),
-    (r"\b(trial\s+balance|tb)\b", "trial_balance"),
+    (r"(?:\b(?:p\s*&\s*l|p\s+and\s+l|profit\s+and\s+loss|income\s+statement|pnl|p\.?\s*&\s*l\.?\s*statement)\b|利润表|损益表|损益账|综合收益表)", "income_statement"),
+    (r"(?:\b(?:balance\s+sheet|statement\s+of\s+financial\s+position|bs)\b|资产负债表|财务状况表)", "balance_sheet"),
+    (r"(?:\b(?:cash\s+flow|cashflow|statement\s+of\s+cash\s+flows)\b|现金流量表|现金流表)", "cash_flow"),
+    (r"(?:\b(?:trial\s+balance|tb)\b|试算平衡表|试算表)", "trial_balance"),
     # Breakdowns - secondary modifiers that compose with the primary
     (r"\bby\s+(segment|segments|division|department|channel|category|bu|business\s+unit)\b", "segment_breakdown"),
     (r"\bby\s+(month|months|quarter|quarters|year|years|period|periods)\b", "time_breakdown"),
@@ -104,7 +104,7 @@ def prepare_schema_for_query(
     """Return a focused copy of `schema` where each dim's `top_consolidations`
     is narrowed to only those elements that the intent actually needs. The
     full original schema stays untouched."""
-    from .dim_roles import get_dim_role
+    from ..schema.dim_roles import get_dim_role
 
     intent = intent or detect_query_intent(question)
     profile_roles = (model_profile or {}).get("dim_roles") or {}
@@ -143,10 +143,11 @@ def _filter_top_consolidations(
 ) -> list[str]:
     """Decide which top_consolidations to keep for one dim, given the role
     and detected intent."""
-    from ..tm1.cache import _base_word_variants, _dim_base_name
+    from ...tm1.cache.defaults import _base_word_variants, _dim_base_name
 
     all_tops = list(dim.get("top_consolidations") or [])
-    if not all_tops:
+    all_cons = list(dim.get("consolidations") or [])
+    if not all_tops and not all_cons:
         return all_tops
     primary = intent["primary"]
     secondaries = set(intent.get("secondaries", []))
@@ -156,7 +157,8 @@ def _filter_top_consolidations(
     def shape(value: str) -> str:
         return re.sub(r"[^a-z0-9]+", "", str(value).lower())
     question_shape = shape(question_lower)
-    name_mentioned = [t for t in all_tops if shape(t) and shape(t) in question_shape]
+    all_candidates = _dedup_preserve(all_tops + all_cons)
+    name_mentioned = [t for t in all_candidates if shape(t) and shape(t) in question_shape]
 
     base = _dim_base_name(dim.get("name", ""))
     base_variants = _base_word_variants(base) if base else set()
@@ -170,7 +172,7 @@ def _filter_top_consolidations(
         # Keep section containers that match the detected statement type
         # (P&L, Balance Sheet, Cash Flow, ...) via intent-driven vocab lookup.
         # Also keep the universal "All <basename>" aggregate as a safe fallback.
-        relevant = [t for t in all_tops if _consolidation_matches_statement(t, primary)]
+        relevant = [t for t in all_candidates if _consolidation_matches_statement(t, primary)]
         kept = _dedup_preserve(name_mentioned + relevant + universals)
         if kept:
             return kept[:15]

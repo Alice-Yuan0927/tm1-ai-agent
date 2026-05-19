@@ -99,6 +99,20 @@ def specific_focus_issue(
         return None
 
     dim_name, element_name = focus
+    focus_dim = next(
+        (d for d in schema.get("dimensions", []) if str(d.get("name", "")) == dim_name),
+        {},
+    )
+    consolidated = {
+        str(e).lower()
+        for e in (
+            list(focus_dim.get("consolidations", []) or [])
+            + list(focus_dim.get("top_consolidations", []) or [])
+        )
+    }
+    if element_name.lower() in consolidated:
+        return None
+
     row_dims = set(cast(list[str], layout.get("row_dimensions") or []))
     col_dims = set(cast(list[str], layout.get("column_dimensions") or []))
     if dim_name not in row_dims and dim_name not in col_dims:
@@ -175,7 +189,7 @@ def account_dim_choice_issue(question: str, schema: dict, mdx: str) -> str | Non
       - the dim on rows isn't the highest-scored one by element content
       - the user didn't explicitly name the dim on rows
     """
-    from .mdx_planner import _resolve_line_item_dim  # avoid module-level cycle
+    from ..mdx.planners.pnl import _resolve_line_item_dim  # avoid module-level cycle
 
     # Pull rows clause out of MDX
     rows_match = re.search(r"(?is)\bSELECT\b.+?\bON\s+ROWS\b", mdx)
@@ -213,7 +227,7 @@ def account_dim_choice_issue(question: str, schema: dict, mdx: str) -> str | Non
         or ""
     )
     suggestion = (
-        f"Descendants([{primary_name}].[{primary_name}].[{top}], 99, LEAVES)"
+        f"Descendants([{primary_name}].[{primary_name}].[{top}])"
         if top else f"the [{primary_name}] dimension"
     )
     return (
@@ -227,27 +241,18 @@ def account_dim_choice_issue(question: str, schema: dict, mdx: str) -> str | Non
     )
 
 
-def default_filter_issue(
+def entity_filter_issue(
     question: str,
     schema: dict,
     mdx: str,
     model_profile: dict | None = None,
 ) -> str | None:
-    """Detect dimension filters that contradict what the user explicitly asked for.
+    """FATAL check: user explicitly named an entity but the entity_subject dim
+    is not filtered to it.
 
-    Three layers keep us from flagging the wrong dim when the user mentions an
-    entity name that exists in multiple dims (e.g. "SLIM-HK" is a member of
-    Company AND Intercompany AND Segment 2):
-
-      1. ROLE gate - only `entity_subject` dims (Company, Cost Center,
-         Customer, Employee, ...) accept an entity-name match. Counterparty
-         (Intercompany), business_classifier (Segment, Category, Disclosure),
-         data_source, metadata dims are exempt; their default filter is the
-         right answer regardless of which entity name appears in the question.
-      2. Consumed-shape gate - if another dim's WHERE filter already uses
-         this element name, the user's mention is honored there.
-      3. Default-element pass-through - a WHERE element equal to the dim's
-         default_element (or to the user's mention) is always OK.
+    Called inside the MDX repair loop — returning a non-None value triggers a
+    re-generation attempt.  Only fires for entity_subject dims; generic default
+    mismatches are handled separately by default_filter_warning().
     """
     from .dim_roles import accepts_entity_name, get_dim_role
     profile_roles = (model_profile or {}).get("dim_roles") or {}
@@ -274,10 +279,35 @@ def default_filter_issue(
     def _shape(value: str) -> str:
         return re.sub(r"[^a-z0-9]+", "", str(value).lower())
 
-    consumed_shapes = {_shape(v) for v in filters.values() if v}
+    # Only count a mention as "already consumed" when it appears in a WHERE
+    # filter for an entity_subject dim. A same-name element in Segment or
+    # Intercompany does NOT satisfy a Company entity mention.
+    entity_dims_in_schema = {
+        str(d.get("name", ""))
+        for d in schema.get("dimensions", [])
+        if accepts_entity_name(get_dim_role(d, profile_roles))
+    }
+    consumed_shapes = {
+        _shape(v)
+        for dim_name, v in filters.items()
+        if v and dim_name in entity_dims_in_schema
+    }
 
     question_text = question.lower()
-    profile_defaults = (model_profile or {}).get("default_filters") or {}
+    entity_candidates: list[tuple[str, str]] = []
+    try:
+        from ...tm1.cache import resolve_question_members
+
+        if entity_dims_in_schema:
+            grounded = resolve_question_members(question, candidate_dims=list(entity_dims_in_schema))
+            entity_candidates.extend(
+                (str(item.get("dimension", "")), str(item.get("element", "")))
+                for item in grounded
+                if str(item.get("dimension", "")) in entity_dims_in_schema
+            )
+    except Exception:
+        pass
+
     for dimension in schema.get("dimensions", []):
         dim_name = str(dimension.get("name", ""))
         if not dim_name or dim_name in axis_dims or dimension.get("is_measure") or dimension.get("is_time_dim"):
@@ -287,25 +317,13 @@ def default_filter_issue(
             continue
         if _question_mentions_element(question_text, actual):
             continue
-        expected_default = str(
-            profile_defaults.get(dim_name)
-            or dimension.get("default_element")
-            or ""
-        ).strip()
-        if expected_default and actual != expected_default:
-            return (
-                "Default filter validation failed: dimension "
-                f"'{dim_name}' was not specified by the user, but WHERE filters "
-                f"it to '{actual}' instead of the default '{expected_default}'. "
-                f"Filter '{dim_name}' to '{expected_default}' unless the user "
-                "explicitly asks for another element."
-            )
-        # ROLE gate: non-entity dims are never wrong here. Their elements may
-        # contain entity-looking strings but those mentions don't belong to
-        # this dim.
+        # Only entity_subject dims can be wrong here — non-entity dims (Segment,
+        # Intercompany, …) keep their default_element regardless of question text.
         if not accepts_entity_name(get_dim_role(dimension, profile_roles)):
             continue
-        for element in dimension.get("elements", []):
+        local_candidates = [element for candidate_dim, element in entity_candidates if candidate_dim == dim_name]
+        local_candidates.extend(str(element) for element in dimension.get("elements", []))
+        for element in dict.fromkeys(local_candidates):
             element_name = str(element)
             if element_name == actual:
                 continue
@@ -328,11 +346,56 @@ def default_filter_warning(
     mdx: str,
     model_profile: dict | None = None,
 ) -> str | None:
-    """Return a non-fatal debug warning for suspicious default filters."""
-    issue = default_filter_issue(question, schema, mdx, model_profile=model_profile)
-    if not issue:
+    """Non-fatal warning: a WHERE filter differs from the model-profile default.
+
+    Entity-mention mismatches are handled separately by entity_filter_issue()
+    (which is fatal).  This warning fires for any non-entity dim whose WHERE
+    value doesn't match the profile's recorded default_element — useful for
+    debugging unexpected filter drift.
+    """
+    from .dim_roles import accepts_entity_name, get_dim_role
+    profile_roles = (model_profile or {}).get("dim_roles") or {}
+    profile_defaults = (model_profile or {}).get("default_filters") or {}
+    if not profile_defaults:
         return None
-    return f"warning: {issue}"
+
+    where_match = re.search(r"(?is)\bWHERE\s*\((.+)\)\s*$", mdx)
+    if not where_match:
+        return None
+    filters = {
+        dim: element
+        for dim, _hier, element in re.findall(
+            r"\[([^\]]+)\]\.\[([^\]]+)\]\.\[([^\]]+)\]",
+            where_match.group(1),
+        )
+    }
+    if not filters:
+        return None
+
+    select_match = re.search(r"(?is)\bSELECT\b(.+?)\bFROM\b", mdx)
+    axis_dims: set[str] = set()
+    if select_match:
+        axis_dims.update(re.findall(r"\[([^\]]+)\]\.\[[^\]]+\]", select_match.group(1)))
+
+    for dimension in schema.get("dimensions", []):
+        dim_name = str(dimension.get("name", ""))
+        if not dim_name or dim_name in axis_dims:
+            continue
+        if dimension.get("is_measure") or dimension.get("is_time_dim"):
+            continue
+        # Entity-subject mismatches are handled by entity_filter_issue() (fatal).
+        if accepts_entity_name(get_dim_role(dimension, profile_roles)):
+            continue
+        actual = filters.get(dim_name, "")
+        if not actual:
+            continue
+        expected = str(profile_defaults.get(dim_name, "")).strip()
+        if expected and actual.lower() != expected.lower():
+            return (
+                f"warning: WHERE filter for '{dim_name}' is '{actual}' but "
+                f"model profile default is '{expected}'."
+            )
+    return None
 
 
 def static_mdx_schema_issue(mdx: str, schema: dict) -> str | None:
@@ -410,7 +473,7 @@ def static_mdx_schema_issue(mdx: str, schema: dict) -> str | None:
 
 def _batch_element_exists(pairs: list[tuple[str, str]]) -> set[tuple[str, str]]:
     """Return the subset of (dim_name, LOWER(element_name)) pairs that exist in cache."""
-    from ..tm1.cache import _connect
+    from ...tm1.cache import connect
     from collections import defaultdict
 
     by_dim: dict[str, list[str]] = defaultdict(list)
@@ -419,7 +482,7 @@ def _batch_element_exists(pairs: list[tuple[str, str]]) -> set[tuple[str, str]]:
 
     found: set[tuple[str, str]] = set()
     try:
-        with _connect() as conn:
+        with connect() as conn:
             for dim, elems in by_dim.items():
                 placeholders = ",".join("?" * len(elems))
                 rows = conn.execute(
@@ -436,7 +499,7 @@ def _batch_element_exists(pairs: list[tuple[str, str]]) -> set[tuple[str, str]]:
 
 def _batch_consolidated_exists(pairs: list[tuple[str, str]]) -> set[tuple[str, str]]:
     """Return subset of (dim_name, LOWER(element_name)) that are Consolidated in cache."""
-    from ..tm1.cache import _connect
+    from ...tm1.cache import connect
     from collections import defaultdict
 
     by_dim: dict[str, list[str]] = defaultdict(list)
@@ -445,7 +508,7 @@ def _batch_consolidated_exists(pairs: list[tuple[str, str]]) -> set[tuple[str, s
 
     found: set[tuple[str, str]] = set()
     try:
-        with _connect() as conn:
+        with connect() as conn:
             for dim, elems in by_dim.items():
                 placeholders = ",".join("?" * len(elems))
                 rows = conn.execute(
@@ -564,7 +627,7 @@ def _find_statement_line_item_dimensions(schema: dict) -> list[str]:
     ranks them: by P&L-flavoured element content first, schema position as
     tie-breaker. Keeps validator and planner in lock-step on which dim is the
     'real' line-item dim, so the loop never bounces between repaired MDXs."""
-    from .mdx_planner import _resolve_line_item_dim, _score_line_item_dim  # avoid module-level cycle
+    from ..mdx.planners.pnl import _resolve_line_item_dim, _score_line_item_dim  # avoid module-level cycle
 
     dims = list(schema.get("dimensions", []) or [])
     primary = _resolve_line_item_dim(dims, None)
@@ -610,7 +673,12 @@ def find_named_schema_element(question: str, schema: dict) -> tuple[str, str] | 
             continue
         if any(token in dim_name.lower() for token in ("year", "month", "period", "time", "date")):
             continue
-        for element in dimension.get("elements", []):
+        candidates = (
+            list(dimension.get("elements", []) or [])
+            + list(dimension.get("consolidations", []) or [])
+            + list(dimension.get("top_consolidations", []) or [])
+        )
+        for element in dict.fromkeys(candidates):
             element_name = str(element)
             cleaned = normalise_focus_text(element_name)
             if len(cleaned) < 4:

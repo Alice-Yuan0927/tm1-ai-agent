@@ -1,5 +1,10 @@
 .env
 backend/runtime/
+backend/*.db
+backend/*.db-shm
+backend/*.db-wal
+.pytest-tmp/
+tmp-pytest/
 .test_runtime_*/
 __pycache__/
 *.py[cod]

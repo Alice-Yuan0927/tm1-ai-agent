@@ -453,3 +453,20 @@ async function fetchSuggestions() {
 }
 
 fetchSuggestions();
+
+// ── Event delegation for dynamically rendered content ─────────────────────────
+
+document.getElementById("out")?.addEventListener("click", event => {
+  const btn = event.target.closest("[data-action='download-excel']");
+  if (!btn) return;
+  const msgId = btn.dataset.msgId;
+  const srcIdx = Number(btn.dataset.srcIdx);
+  if (msgId) downloadExcel(msgId, srcIdx);
+});
+
+document.getElementById("historyList")?.addEventListener("click", event => {
+  const btn = event.target.closest("[data-action='open-history']");
+  if (!btn) return;
+  const id = btn.dataset.id;
+  if (id) openHistory(id);
+});

@@ -1,5 +1,5 @@
-async function downloadExcel(msgIdx, srcIdx) {
-  const msg = currentMessages[msgIdx];
+async function downloadExcel(msgId, srcIdx) {
+  const msg = currentMessages.find(m => m._id === msgId);
   if (!msg) return;
   const sources = Array.isArray(msg.data_sources) && msg.data_sources.length
     ? msg.data_sources
@@ -7,7 +7,7 @@ async function downloadExcel(msgIdx, srcIdx) {
   const source = sources[srcIdx];
   if (!source) return;
 
-  const btn = document.querySelector(`[data-xlsx="${msgIdx}-${srcIdx}"]`);
+  const btn = document.querySelector(`[data-msg-id="${msgId}"][data-src-idx="${srcIdx}"]`);
   if (btn) { btn.disabled = true; btn.textContent = "Exporting…"; }
 
   try {
@@ -85,6 +85,17 @@ async function go(overrideOptions = {}) {
         history: currentMessages.map(m => ({
           question: m.question, analysis: m.analysis,
           chosen_cube: m.chosen_cube, type: m.type || "analysis",
+          data_sources: (m.data_sources || []).map(s => ({
+            cube: s.cube,
+            generated_mdx: s.generated_mdx,
+            structured_preview: s.structured_preview ? {
+              row_dimensions: s.structured_preview.row_dimensions || [],
+              column_dimensions: s.structured_preview.column_dimensions || [],
+              filters: s.structured_preview.filters || [],
+              measure_dimension: s.structured_preview.measure_dimension || "",
+              columns: s.structured_preview.columns || [],
+            } : {},
+          })),
         })),
         selected_cubes: scope,
       }),
@@ -129,6 +140,7 @@ async function go(overrideOptions = {}) {
 
         } else if (event.type === "done") {
           const data = event.data;
+          if (!data._id) data._id = newId();
           currentResult = data;
           currentMessages.push(data);
           saveCurrentConversation();
@@ -158,19 +170,19 @@ async function go(overrideOptions = {}) {
       return;
     }
     const skippedDebug = Array.isArray(err.skipped) && err.skipped.length
-      ? `<details class="mt-3 rounded-lg border border-amber-200 bg-white/60 px-3 py-2 text-[12px] text-amber-800">
+      ? `<details class="mt-3 min-w-0 max-w-full rounded-lg border border-amber-200 bg-white/60 px-3 py-2 text-[12px] text-amber-800">
           <summary class="cursor-pointer font-medium">Skipped source debug</summary>
-          <div class="mt-3 space-y-3">
+          <div class="mt-3 min-w-0 space-y-3">
             ${err.skipped.map((source, index) => _skippedSourceHtml(source, index)).join("")}
           </div>
         </details>`
       : "";
     const scopePrompt = err.scopeFiltered
-      ? `<div class="mt-3 rounded-lg border border-amber-300 bg-white/70 px-3 py-2.5 text-[12px] text-amber-900">
+      ? `<div class="mt-3 min-w-0 rounded-lg border border-amber-300 bg-white/70 px-3 py-2.5 text-[12px] text-amber-900">
           <div class="font-medium">Your selected cubes returned no usable data.</div>
-          ${err.scopedCubes?.length ? `<div class="mt-1 text-[11px] text-amber-700">Scope: ${err.scopedCubes.map(c => esc(c)).join(", ")}</div>` : ""}
+          ${err.scopedCubes?.length ? `<div class="mt-1 break-words text-[11px] text-amber-700">Scope: ${err.scopedCubes.map(c => esc(c)).join(", ")}</div>` : ""}
           <div class="mt-2">Want me to expand the search to the rest of the cubes?</div>
-          <div class="mt-2 flex gap-2">
+          <div class="mt-2 flex flex-wrap gap-2">
             <button type="button" id="expandCubeScopeBtn"
               class="h-7 rounded-md bg-cw-blue px-3 text-[11px] font-semibold text-white shadow-md shadow-cw-blue/20 transition hover:bg-cw-blueHover">
               Search all cubes
@@ -183,13 +195,13 @@ async function go(overrideOptions = {}) {
         </div>`
       : "";
     output.insertAdjacentHTML("beforeend",
-      `<div class="rounded-[10px] border border-amber-200 bg-amber-50 px-[18px] py-3.5 text-[13px] text-amber-800 shadow-soft">
-        <div class="flex items-start gap-2.5">
+      `<div class="max-w-full rounded-[10px] border border-amber-200 bg-amber-50 px-[18px] py-3.5 text-[13px] text-amber-800 shadow-soft">
+        <div class="flex min-w-0 items-start gap-2.5">
           <i class="fa-solid fa-triangle-exclamation mt-0.5 text-[12px] text-amber-500"></i>
           <div class="min-w-0 flex-1">
             <div class="font-semibold text-amber-900">No matching data found</div>
-            <div class="mt-0.5">${esc(err.message)}</div>
-            ${err.detail ? `<details class="mt-2 text-[11px] text-amber-700"><summary class="cursor-pointer font-medium">Technical details</summary><div class="mt-1 whitespace-pre-wrap">${esc(err.detail)}</div></details>` : ""}
+            <div class="mt-0.5 break-words">${esc(err.message)}</div>
+            ${err.detail ? `<details class="mt-2 min-w-0 text-[11px] text-amber-700"><summary class="cursor-pointer font-medium">Technical details</summary><div class="mt-1 max-w-full whitespace-pre-wrap break-all">${esc(err.detail)}</div></details>` : ""}
             ${skippedDebug}
             ${scopePrompt}
           </div>
