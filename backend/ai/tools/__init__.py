@@ -7,14 +7,16 @@ Note: execution.py is intentionally NOT re-exported here because
 """
 
 from .element_search import find_element_candidates, resolve_members
-from .element_tools import ELEMENT_TOOLS, execute_element_tool
+from .element_tools import ELEMENT_REGISTRY
+from .registry import ToolRegistry, ToolSpec
 from .preview import PreviewResult, build_cube_preview
 from .rag_tools import get_similar_queries, record_query
 
 __all__ = [
-    # LLM agent tools (return JSON strings)
-    "ELEMENT_TOOLS",
-    "execute_element_tool",
+    # Tool registry
+    "ELEMENT_REGISTRY",
+    "ToolRegistry",
+    "ToolSpec",
     # Pipeline tools (return typed Python objects)
     "find_element_candidates",
     "resolve_members",

@@ -3,7 +3,6 @@ from backend.ai.prompts import MDX_HARD_RULES, prompt_rules
 from backend.ai.intent.clarification import find_clarifications
 from backend.ai.schema.dim_roles import get_dim_role
 from backend.ai.mdx.normalize import validate_generated_mdx
-from backend.ai.mdx.planner import try_plan_mdx
 from backend.ai.providers.openai_provider import (
     _is_unsupported_temperature_error as is_unsupported_temperature_error,
     _needs_min_token_budget as needs_openai_min_token_budget,
@@ -401,40 +400,6 @@ def test_finance_semantics_handles_explicit_pnl_cube_and_account_dimension():
     assert income_statement["confidence"] >= 0.7
 
 
-def test_planner_prefers_profit_and_loss_hierarchy_parent_over_account_total():
-    schema = {
-        "cube": "P&L",
-        "dimensions": [
-            {
-                "name": "Account",
-                "elements": ["Revenue", "COGS", "Gross Profit", "Net Profit"],
-                "consolidations": ["Profit and Loss", "Gross Profit", "Net Profit"],
-                "top_consolidations": ["All Accounts"],
-                "default_element": "All Accounts",
-            },
-            {"name": "Year", "is_time_dim": True, "elements": ["2025"], "default_element": "2025"},
-            {"name": "Scenario", "elements": ["Actual"], "default_element": "Actual"},
-            {"name": "Measure", "is_measure": True, "elements": ["Amount"], "default_element": "Amount"},
-        ],
-    }
-    model_profile = {
-        "finance_semantics": {
-            "concepts": {
-                "income_statement": {
-                    "confidence": 1.0,
-                    "line_item_dimension": "Account",
-                    "preferred_measures": ["Amount"],
-                }
-            }
-        }
-    }
-
-    plan = try_plan_mdx("show me actual P&L in 2025", schema, model_profile=model_profile)
-
-    assert plan is not None
-    assert "Descendants([Account].[Account].[Profit and Loss])" in plan.mdx
-    assert "LEAVES" not in plan.mdx
-    assert "[Account].[Account].[All Accounts]" not in plan.mdx
 
 
 def test_statement_schema_filter_keeps_non_top_profit_and_loss_parent():
@@ -649,11 +614,7 @@ def test_currency_alias_promotes_data_source_dim_to_currency_view_role():
 
     assert get_dim_role(source_dim, model_profile["dim_roles"]) == "currency_view"
 
-    plan = try_plan_mdx("show me P&L in 2024", schema, model_profile=model_profile)
-
-    assert plan is not None
-    assert "[S Consol GL Company].[S Consol GL Company].[EC]" in plan.mdx
-    assert "All Data Sources List" not in plan.mdx
+    assert get_dim_role(source_dim, model_profile["dim_roles"]) == "currency_view"
 
 
 def test_profile_dim_roles_map_uses_content_based_roles():
@@ -687,36 +648,6 @@ def test_profile_dim_roles_map_uses_content_based_roles():
     assert roles["Reporting Currency"] == "currency_code"
 
 
-def test_planner_honors_explicit_currency_code_dimension():
-    schema = {
-        "cube": "P&L",
-        "dimensions": [
-            {
-                "name": "Account",
-                "elements": ["Revenue"],
-                "top_consolidations": ["Net Income"],
-                "default_element": "Net Income",
-            },
-            {"name": "Year", "is_time_dim": True, "elements": ["2024"], "default_element": "2024"},
-            {"name": "Scenario", "elements": ["Actual"], "default_element": "Actual"},
-            {"name": "Reporting Currency", "elements": ["USD", "EUR", "HKD", "AUD"], "default_element": "USD"},
-            {"name": "Measure", "is_measure": True, "elements": ["Amount"], "default_element": "Amount"},
-        ],
-    }
-    model_profile = {
-        "finance_semantics": {
-            "income_statement": {
-                "confidence": 1.0,
-                "line_item_dimension": "Account",
-                "preferred_measures": ["Amount"],
-            }
-        }
-    }
-
-    plan = try_plan_mdx("show me P&L in EUR in 2024", schema, model_profile=model_profile)
-
-    assert plan is not None
-    assert "[Reporting Currency].[Reporting Currency].[EUR]" in plan.mdx
 
 
 def test_grounded_members_section_marks_entity_eligible_candidates():

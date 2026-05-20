@@ -139,21 +139,13 @@ def test_analysis_fallback_message_generic_for_other_errors():
     assert "narrative step failed" in msg
 
 
-def test_cuberesult_to_source_dict_omits_low_confidence_plan():
-    from backend.ai.mdx.planner import MdxPlan
-    plan = MdxPlan(
-        mdx="SELECT {} ON 0 FROM [C]",
-        confidence=0.4,  # below PLAN_SURFACE_THRESHOLD typically
-        pattern="account_by_period",
-    )
+def test_cuberesult_to_source_dict_has_required_keys():
     result = _CubeResult(
         cube="C", reasoning="r",
         rows=[{"value": 1}], layout={}, mdx="m",
         mdx_attempts=[], full_preview={}, limited_preview={},
-        effective_row_count=1, plan=plan,
+        effective_row_count=1,
     )
     d = result.to_source_dict()
-    # plan field should be present even when low-confidence (or None when >= threshold)
-    assert "plan" in d
     assert d["cube"] == "C"
     assert d["data_row_count"] == 1

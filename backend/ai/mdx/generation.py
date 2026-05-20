@@ -97,7 +97,7 @@ def _build_dims_section(ctx: MdxContext) -> tuple[str, str, str, str, str]:
     )
     return (
         dims_json,
-        line_item_directive(ctx.question, ctx.cube_schema),
+        line_item_directive(ctx.question, ctx.cube_schema, ctx.model_profile),
         consolidated_member_directive(ctx.question, ctx.grounded_members, ctx.cube_schema),
         profile_defaults_directive(ctx.cube_schema, ctx.model_profile, ctx.question),
         grounded_members_section(ctx.grounded_members, ctx.cube_schema, ctx.model_profile),

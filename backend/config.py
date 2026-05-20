@@ -14,7 +14,8 @@ _log = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
 ENV_PATH = BASE_DIR.parent / ".env"
-RUNTIME_DIR = BASE_DIR / "runtime"
+DATA_DIR = BASE_DIR / "data"
+RUNTIME_DIR = DATA_DIR / "runtime"
 TM1_CONFIG_PATH = RUNTIME_DIR / "tm1_config.json"
 LLM_CONFIG_PATH = RUNTIME_DIR / "llm_config.json"
 LLM_MODELS_PATH = RUNTIME_DIR / "llm_models.json"

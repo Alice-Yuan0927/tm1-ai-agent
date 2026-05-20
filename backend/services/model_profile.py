@@ -21,7 +21,8 @@ from ..tm1.cache import get_current_period_defaults
 from ..tm1.service import get_cube_schema, get_cubes_with_descriptions
 from ..util.io import atomic_write_json
 
-_PROFILE_DIR = Path(__file__).parent.parent / "model_profiles"
+from ..config import DATA_DIR
+_PROFILE_DIR = DATA_DIR / "model_profiles"
 
 
 def model_profile_id() -> str:

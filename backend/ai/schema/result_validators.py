@@ -189,8 +189,6 @@ def account_dim_choice_issue(question: str, schema: dict, mdx: str) -> str | Non
       - the dim on rows isn't the highest-scored one by element content
       - the user didn't explicitly name the dim on rows
     """
-    from ..mdx.planners.pnl import _resolve_line_item_dim  # avoid module-level cycle
-
     # Pull rows clause out of MDX
     rows_match = re.search(r"(?is)\bSELECT\b.+?\bON\s+ROWS\b", mdx)
     if not rows_match:
@@ -203,7 +201,7 @@ def account_dim_choice_issue(question: str, schema: dict, mdx: str) -> str | Non
     candidates = _find_statement_line_item_dimensions(schema)
     if len(candidates) < 2:
         return None  # No competing account dims - nothing to disambiguate.
-    primary_dim = _resolve_line_item_dim(schema.get("dimensions", []) or [], None)
+    primary_dim = _resolve_line_item_dim(schema.get("dimensions", []) or [])
     if not primary_dim:
         return None
     primary_name = str(primary_dim.get("name", ""))
@@ -621,16 +619,53 @@ def _is_statement_question(question: str) -> bool:
 
 _LINE_ITEM_TOKENS = ("account", "line item", "chart of accounts", "p&l account", "gl")
 
+_PNL_ELEMENT_TOKENS = (
+    "revenue", "sales", "income", "cost", "expense", "expenses",
+    "gross profit", "operating profit", "operating expense", "operating income",
+    "net income", "net profit", "ebitda", "ebit", "earnings", "margin",
+    "depreciation", "amortization", "amortisation", "impairment",
+    "interest", "tax", "taxes", "deferred",
+    "cogs", "cost of goods", "cost of sales",
+    "salary", "salaries", "wages", "compensation", "benefits", "bonus",
+    "rent", "utilities", "marketing", "advertising",
+    "loss", "profit", "fee", "fees", "charge", "charges",
+)
+
+
+def _score_line_item_dim(dim: dict) -> int:
+    """Count P&L-flavoured tokens across the dim's elements and consolidations."""
+    bag: list[str] = []
+    bag.extend(str(e) for e in dim.get("elements", []) or [])
+    bag.extend(str(e) for e in dim.get("consolidations", []) or [])
+    bag.extend(str(e) for e in dim.get("top_consolidations", []) or [])
+    text = " ".join(b.lower() for b in bag)
+    return sum(1 for token in _PNL_ELEMENT_TOKENS if token in text)
+
+
+def _resolve_line_item_dim(dimensions: list[dict]) -> dict | None:
+    """Pick the dim whose element content is most P&L-flavoured."""
+    candidates: list[tuple[int, int, dict]] = []
+    for index, dim in enumerate(dimensions):
+        if dim.get("is_measure"):
+            continue
+        name = str(dim.get("name", "")).lower()
+        name_match = any(hint in name for hint in _LINE_ITEM_TOKENS)
+        element_score = _score_line_item_dim(dim)
+        if not name_match and element_score == 0:
+            continue
+        score = element_score * 3 + (1 if name_match else 0)
+        candidates.append((score, -index, dim))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][2]
+
 
 def _find_statement_line_item_dimensions(schema: dict) -> list[str]:
-    """Return account/line-item candidate dims, ranked the same way the planner
-    ranks them: by P&L-flavoured element content first, schema position as
-    tie-breaker. Keeps validator and planner in lock-step on which dim is the
-    'real' line-item dim, so the loop never bounces between repaired MDXs."""
-    from ..mdx.planners.pnl import _resolve_line_item_dim, _score_line_item_dim  # avoid module-level cycle
-
+    """Return account/line-item candidate dims ranked by P&L element content,
+    with schema position as tie-breaker."""
     dims = list(schema.get("dimensions", []) or [])
-    primary = _resolve_line_item_dim(dims, None)
+    primary = _resolve_line_item_dim(dims)
     primary_name = str(primary.get("name", "")) if primary else ""
 
     candidates: list[tuple[int, int, str]] = []

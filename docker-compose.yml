@@ -8,6 +8,7 @@ services:
     volumes:
       - ./backend:/app/backend
       - ./frontend:/app/frontend
+      - tm1_data:/app/backend/data
     environment:
       LLM_API_KEY: ${LLM_API_KEY}
       LLM_EMBEDDING_API_KEY: ${LLM_EMBEDDING_API_KEY:-${LLM_embedding_api_key:-}}
@@ -22,3 +23,6 @@ services:
       TM1_VERIFY: ${TM1_VERIFY:-false}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       RESEND_FROM: ${RESEND_FROM:-}
+
+volumes:
+  tm1_data:

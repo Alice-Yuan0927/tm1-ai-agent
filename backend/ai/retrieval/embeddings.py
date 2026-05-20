@@ -17,16 +17,15 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
-from pathlib import Path
 
 import numpy as np
 
-from ...config import EMBEDDING_BATCH_SIZE, get_llm_api_key, get_llm_provider
+from ...config import DATA_DIR, EMBEDDING_BATCH_SIZE, get_llm_api_key, get_llm_provider
 
 _log = logging.getLogger(__name__)
 
 _EMBED_MODEL = "text-embedding-3-small"
-_DB_PATH = Path(__file__).parent.parent.parent / "schema_cache.db"
+_DB_PATH = DATA_DIR / "schema_cache.db"
 
 # Attribute names that carry human-readable descriptions (checked in order).
 _DESCRIPTION_ATTR_NAMES = {"description", "label", "name", "longname", "long name"}

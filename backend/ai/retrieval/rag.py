@@ -15,9 +15,10 @@ query_meta     regular table       - timestamp and row_count per entry
 import json
 import re
 import sqlite3
-from pathlib import Path
 
-_DB_PATH = Path(__file__).parent.parent.parent / "query_history.db"
+from ...config import DATA_DIR
+
+_DB_PATH = DATA_DIR / "query_history.db"
 
 
 # ---------------------------------------------------------------------------

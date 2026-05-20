@@ -12,7 +12,6 @@ from .intent.preflight import is_unclear_question
 from .mdx.context import MdxContext
 from .mdx.generation import repair_cube_mdx
 from .mdx.normalize import normalize_mdx, validate_generated_mdx
-from .mdx.planner import MdxPlan, SURFACE_THRESHOLD as PLAN_SURFACE_THRESHOLD, try_plan_mdx
 from .output.narrative import (
     generate_homepage_suggestions,
     parse_suggestions as _parse_suggestions,
@@ -23,8 +22,6 @@ from .retrieval.rag import init_db, retrieve_similar, save_query
 
 __all__ = [
     "MdxContext",
-    "MdxPlan",
-    "PLAN_SURFACE_THRESHOLD",
     "_parse_suggestions",
     "detect_attribute_intent",
     "effective_question_from_history",
@@ -41,6 +38,5 @@ __all__ = [
     "select_cubes",
     "select_cubes_with_profile",
     "stream_financial_analysis",
-    "try_plan_mdx",
     "validate_generated_mdx",
 ]

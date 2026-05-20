@@ -2,9 +2,9 @@
 
 import sqlite3
 import threading
-from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent.parent.parent / "schema_cache.db"
+from ...config import DATA_DIR
+DB_PATH = DATA_DIR / "schema_cache.db"
 
 # Per-thread cached connection. SQLite connections are not safe to share across
 # threads, but reusing one per worker thread avoids the open/close cost on every

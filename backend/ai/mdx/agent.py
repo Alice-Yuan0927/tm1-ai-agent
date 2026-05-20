@@ -20,7 +20,7 @@ from ..output.conversation import conversation_context
 from ..prompts import MDX_HARD_RULES
 from ..prompts.prompt_rules import GENERAL_AGENT_CONTRACT
 from ..providers import call_with_tools
-from ..tools.element_tools import ELEMENT_TOOLS, execute_element_tool
+from ..tools.element_tools import ELEMENT_REGISTRY
 from .context import MdxContext
 from .directives import (
     consolidated_member_directive,
@@ -58,7 +58,7 @@ _EXECUTE_MDX_TOOL: dict = {
     },
 }
 
-_AGENT_TOOLS: list[dict] = ELEMENT_TOOLS + [_EXECUTE_MDX_TOOL]
+_AGENT_TOOLS: list[dict] = ELEMENT_REGISTRY.schemas() + [_EXECUTE_MDX_TOOL]
 
 
 # ---------------------------------------------------------------------------
@@ -88,17 +88,9 @@ class AgentResult:
 def run_mdx_agent(
     ctx: MdxContext,
     *,
-    plan_hint: str | None = None,
     max_steps: int = _MAX_AGENT_STEPS,
 ) -> AgentResult:
-    """LLM-driven MDX loop: search → write → execute → check result → retry.
-
-    Args:
-        ctx: Full cube context (use full schema, not focused; agent sees all dims).
-        plan_hint: Optional MDX from the rule-based planner (low confidence) that
-            the LLM can use as a starting point and verify via execute_mdx.
-        max_steps: Maximum tool-calling rounds before giving up.
-    """
+    """LLM-driven MDX loop: search → write → execute → check result → retry."""
     from ...services.mdx_execution import execute_once
 
     ctx = _merge_historical_grounded(ctx)
@@ -112,7 +104,7 @@ def run_mdx_agent(
         indent=2,
         ensure_ascii=False,
     )
-    statement_directive = line_item_directive(ctx.question, ctx.cube_schema)
+    statement_directive = line_item_directive(ctx.question, ctx.cube_schema, ctx.model_profile)
     consolidated_directive = consolidated_member_directive(
         ctx.question, ctx.grounded_members, ctx.cube_schema
     )
@@ -142,17 +134,20 @@ Dimensions and their available elements:
 </conversation>
 
 <workflow>
-1. If you are uncertain about any element name, call search_elements or
-   get_dimension_members before writing MDX.
-2. Write an MDX SELECT statement and call execute_mdx to test it.
-3. If execute_mdx returns 0 rows:
+1. If you need business context about the cube (what it tracks, typical uses,
+   available measures), call get_cube_summary first.
+2. If uncertain about element names, call search_elements or get_dimension_members.
+   To understand a consolidation's children before using Descendants(), call get_children.
+   To get aliases or descriptions for coded elements, call get_element_attributes.
+3. Write an MDX SELECT statement and call execute_mdx to test it.
+4. If execute_mdx returns 0 rows:
    - Call search_elements to verify the exact element name spelling.
    - Adjust the MDX filter or expand to a parent consolidation, then retry.
-4. If execute_mdx returns an error:
+5. If execute_mdx returns an error:
    - Read the error message — it usually names the invalid member.
    - Call search_elements for that member, fix the MDX, then retry.
-5. Once execute_mdx returns row_count > 0, stop immediately.
-6. Only if you genuinely cannot write a valid MDX for this question, reply with
+6. Once execute_mdx returns row_count > 0, stop immediately.
+7. Only if you genuinely cannot write a valid MDX for this question, reply with
    a plain text explanation of why (no MDX, no tool call).
 </workflow>
 
@@ -160,16 +155,10 @@ Hard rules for valid TM1 MDX:
 1. FROM [{cube_name}] must come immediately after the axes - always BEFORE WHERE
 {MDX_HARD_RULES}"""
 
-    hint_text = (
-        f'\n\nThe rule-based planner suggests this starting MDX '
-        f'(low confidence — verify with execute_mdx and revise element names if needed):\n{plan_hint}'
-        if plan_hint else ""
-    )
-
     messages: list[dict] = [
         {
             "role": "user",
-            "content": f'{system_prompt}\n\nUser question: "{ctx.question}"{hint_text}',
+            "content": f'{system_prompt}\n\nUser question: "{ctx.question}"',
         }
     ]
 
@@ -244,7 +233,7 @@ Hard rules for valid TM1 MDX:
                 _log.debug("[mdx-agent] execute_mdx step=%d %s", step_num, tool_result[:200])
 
             else:
-                tool_result = execute_element_tool(tool_name, tool_args, ctx.cube_schema)
+                tool_result = ELEMENT_REGISTRY.execute(tool_name, tool_args, ctx.cube_schema)
                 steps.append(AgentStep(tool_name, tool_args, tool_result[:120]))
                 _log.debug("[mdx-agent] %s step=%d %s", tool_name, step_num, tool_result[:120])
 

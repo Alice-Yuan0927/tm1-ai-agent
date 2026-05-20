@@ -9,6 +9,7 @@ top-to-bottom.
 import json as _json
 import logging
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any
 
@@ -20,16 +21,13 @@ from ..ai.intent.clarification import find_clarifications, find_schema_clarifica
 from ..ai.intent.cube_selection import select_cubes_with_profile
 from ..ai.intent.layout_followup import effective_question_from_history
 from ..ai.intent.preflight import is_unclear_question
-from ..ai.intent.query_intent import detect_query_intent, prepare_schema_for_query
 from ..ai.mdx.agent import run_mdx_agent
 from ..ai.mdx.context import MdxContext
-from ..ai.mdx.planner import MdxPlan, SURFACE_THRESHOLD as PLAN_SURFACE_THRESHOLD, try_plan_mdx
 from ..ai.output.narrative import (
     parse_suggestions as _parse_suggestions,
     stream_financial_analysis,
 )
-from ..ai.tools.element_search import find_element_candidates, resolve_members
-from ..ai.tools.execution import run_mdx
+from ..ai.tools.element_search import resolve_members
 from ..ai.tools.preview import build_cube_preview
 from ..ai.tools.rag_tools import get_similar_queries, record_query
 from ..config import (
@@ -82,12 +80,8 @@ class _CubeResult:
     full_preview: dict
     limited_preview: dict
     effective_row_count: int
-    plan: MdxPlan | None
 
     def to_source_dict(self) -> dict:
-        plan_dict = None
-        if self.plan is not None and self.plan.confidence < PLAN_SURFACE_THRESHOLD:
-            plan_dict = self.plan.to_dict()
         return {
             "cube": self.cube,
             "reasoning": self.reasoning,
@@ -98,7 +92,7 @@ class _CubeResult:
             "generated_mdx": self.mdx,
             "mdx_attempts": self.mdx_attempts,
             "analysis_rows": self.rows,
-            "plan": plan_dict,
+            "plan": None,
             "_full_preview": self.full_preview,
         }
 
@@ -245,41 +239,6 @@ def _select_cubes_stage(
 
 # ── Stage 3: process one cube ────────────────────────────────────────────────
 
-def _try_planner_fast_path(
-    question: str,
-    focused_schema: dict,
-    cube_dims: list[str],
-    model_profile: dict | None,
-) -> tuple[MdxPlan | None, str | None]:
-    """Run the rule-based planner. Returns (plan, hint_mdx).
-
-    - plan is non-None when confidence >= PLAN_SURFACE_THRESHOLD (fast path).
-    - hint_mdx is non-None when MIN_CONFIDENCE <= confidence < PLAN_SURFACE_THRESHOLD
-      (low-confidence plan passed as a hint to the agent).
-    """
-    if "Follow-up layout instruction:" in question:
-        return None, None
-    try:
-        element_matches = find_element_candidates(question, cube_dims)
-        plan = try_plan_mdx(
-            question, focused_schema,
-            model_profile=model_profile,
-            element_matches=element_matches,
-        )
-    except Exception as exc:
-        _log.warning("[mdx-planner] error: %s", exc)
-        return None, None
-
-    if plan is None:
-        return None, None
-    if plan.confidence >= PLAN_SURFACE_THRESHOLD:
-        _log.info("[mdx-planner] high-conf pattern=%s conf=%.2f", plan.pattern, plan.confidence)
-        return plan, None
-    # Low confidence — pass MDX as a hint to the agent
-    _log.info("[mdx-planner] low-conf pattern=%s conf=%.2f — passing hint to agent", plan.pattern, plan.confidence)
-    return None, plan.mdx
-
-
 def _process_cube(
     selected: dict,
     effective_question: str,
@@ -298,14 +257,6 @@ def _process_cube(
         return {"cube": cube, "reasoning": source_reasoning, "status": f"schema error: {exc}"}
 
     similar = get_similar_queries(effective_question, cube)
-    intent = detect_query_intent(effective_question)
-    focused_schema = prepare_schema_for_query(
-        schema, effective_question, intent=intent, model_profile=model_profile,
-    )
-    _log.info(
-        "[query-intent] %s primary=%s sec=%s conf=%.2f",
-        cube, intent["primary"], intent["secondaries"], intent["confidence"],
-    )
     cube_dims = [
         str(d.get("name", "")) for d in schema.get("dimensions", []) if d.get("name")
     ]
@@ -313,7 +264,6 @@ def _process_cube(
     if grounded_members:
         _log.info("[member-grounding] %s candidates=%d", cube, len(grounded_members))
 
-    # ctx uses full schema so execute_once validation has all element names.
     ctx = MdxContext(
         question=effective_question,
         cube_schema=schema,
@@ -323,37 +273,7 @@ def _process_cube(
         similar_queries=similar,
     )
 
-    # ── Fast path: high-confidence rule planner (no LLM needed) ──────────────
-    plan, plan_hint = _try_planner_fast_path(
-        effective_question, focused_schema, cube_dims, model_profile
-    )
-    if plan is not None:
-        try:
-            rows, layout, plan_mdx, mdx_attempts = run_mdx(ctx, plan.mdx)
-            if rows:
-                preview = build_cube_preview(rows, layout, forced_apply_attributes or None)
-                record_query(
-                    effective_question, cube, plan_mdx,
-                    row_count=preview.effective_row_count,
-                    grounded_members=grounded_members,
-                )
-                return _CubeResult(
-                    cube=cube, reasoning=source_reasoning,
-                    rows=rows, layout=layout,
-                    mdx=plan_mdx, mdx_attempts=mdx_attempts,
-                    full_preview=preview.full, limited_preview=preview.limited,
-                    effective_row_count=preview.effective_row_count,
-                    plan=plan,
-                )
-            _log.info("[mdx-planner] %s returned 0 rows — falling to agent", cube)
-        except RuntimeError as exc:
-            if "connection" in str(exc).lower() or "timeout" in str(exc).lower():
-                return {"cube": cube, "reasoning": source_reasoning, "status": f"error: {exc}"}
-            _log.info("[mdx-planner] %s failed: %s — falling to agent", cube, exc)
-        plan = None  # planner didn't work; reset so _CubeResult gets plan=None
-
-    # ── Agentic loop: LLM searches elements, writes MDX, executes, retries ───
-    agent_result = run_mdx_agent(ctx, plan_hint=plan_hint)
+    agent_result = run_mdx_agent(ctx)
 
     if agent_result.error or not agent_result.rows:
         status = agent_result.error or "no data"
@@ -383,7 +303,6 @@ def _process_cube(
         full_preview=preview.full,
         limited_preview=preview.limited,
         effective_row_count=preview.effective_row_count,
-        plan=None,
     )
 
 
@@ -457,22 +376,48 @@ def analyze_sse_gen(req: QuestionRequest, request: Request | None = None):
     reasoning = cube_selection.reasoning
     user_scoped = cube_selection.user_scoped
     cube_limit = CUBE_SELECT_LIMIT_MANUAL if user_scoped else CUBE_SELECT_LIMIT_AUTO
-    sources: list[_CubeResult] = []
-    skipped_sources: list[dict[str, Any]] = []
+    # Deduplicate and cap the cube list while preserving order.
     seen_cubes: set[str] = set()
-
+    ordered_cubes: list[dict] = []
     for selected in selected_cubes[:cube_limit]:
-        if _client_disconnected(request):
-            return
         cube = str(selected.get("cube", "")).strip()
         if not cube or cube in seen_cubes:
             continue
         seen_cubes.add(cube)
+        ordered_cubes.append(selected)
 
-        outcome_obj = _process_cube(
+    # Pre-populate schema cache sequentially (fast SQLite reads) so parallel
+    # workers never race on the same cache key.
+    for selected in ordered_cubes:
+        try:
+            schema_cache.get(str(selected.get("cube", "")).strip())
+        except Exception:
+            pass  # _process_cube handles the schema error cleanly
+
+    if _client_disconnected(request):
+        return
+
+    # Run each cube in parallel; preserve original ordering for the sources list.
+    sources: list[_CubeResult] = []
+    skipped_sources: list[dict[str, Any]] = []
+
+    def _run(idx: int, selected: dict) -> tuple[int, _CubeResult | dict]:
+        return idx, _process_cube(
             selected, effective_question, req, model_profile,
             forced_apply_attributes, schema_cache,
         )
+
+    n = len(ordered_cubes)
+    with ThreadPoolExecutor(max_workers=n or 1) as pool:
+        futures = [pool.submit(_run, i, sel) for i, sel in enumerate(ordered_cubes)]
+        indexed: list[tuple[int, _CubeResult | dict]] = []
+        for future in as_completed(futures):
+            try:
+                indexed.append(future.result())
+            except Exception as exc:
+                _log.warning("[parallel-cubes] unexpected error: %s", exc)
+
+    for _, outcome_obj in sorted(indexed, key=lambda t: t[0]):
         if isinstance(outcome_obj, _CubeResult):
             sources.append(outcome_obj)
         else:

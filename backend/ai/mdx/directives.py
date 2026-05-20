@@ -10,13 +10,142 @@ _STATEMENT_QUESTION_RE = re.compile(
     re.IGNORECASE,
 )
 
-
 _SPECIFIC_MONTH_RE = re.compile(
     r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|\d{1,2}\s*月"
     r"|q[1-4]|quarter|month\s+\d)",
     re.IGNORECASE,
 )
 
+# Keys in default_filters that are time/reserved and not generic dim overrides.
+_RESERVED_DEFAULT_FILTER_KEYS = {
+    "current_year", "current_month", "current_day", "current_week",
+    "forecast_year", "source", "used_real_current_date",
+    "Month", "Year",
+}
+
+# Vocabulary used by the schema-scoring fallback in _line_item_dim_from_profile.
+_LINE_ITEM_NAME_HINTS = ("account", "line item", "chart of accounts", "p&l account", "gl")
+_PNL_ELEMENT_TOKENS = (
+    "revenue", "sales", "income", "cost", "expense",
+    "gross profit", "operating profit", "net income", "ebitda", "ebit",
+    "depreciation", "amortization", "amortisation", "interest", "tax",
+)
+
+
+# ── Private helpers ───────────────────────────────────────────────────────────
+
+def _profile_dim_defaults(model_profile: dict | None) -> dict[str, str]:
+    """Per-dimension WHERE overrides from default_filters in the profile."""
+    raw = (model_profile or {}).get("default_filters") or {}
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(k): v.strip()
+        for k, v in raw.items()
+        if k not in _RESERVED_DEFAULT_FILTER_KEYS
+        and isinstance(v, str) and v.strip()
+    }
+
+
+def _estimate_descendants(dim_name: str, element_name: str, limit: int) -> int:
+    """BFS on element_edges; stops as soon as `limit` nodes are counted."""
+    try:
+        from ...tm1.cache.db import connect
+        rows = connect().execute(
+            "SELECT parent_name, child_name FROM element_edges WHERE dim_name = ?",
+            (dim_name,),
+        ).fetchall()
+    except Exception:
+        return 0
+
+    children_by_parent: dict[str, list[str]] = {}
+    for parent, child in rows:
+        children_by_parent.setdefault(str(parent), []).append(str(child))
+
+    seen: set[str] = set()
+    queue = list(children_by_parent.get(element_name, []))
+    while queue:
+        node = queue.pop(0)
+        if node in seen:
+            continue
+        seen.add(node)
+        if len(seen) >= limit:
+            return len(seen)
+        queue.extend(children_by_parent.get(node, []))
+    return len(seen)
+
+
+def _best_all_period(candidates: list[str], dim_name: str = "") -> str:
+    """Return the minimum-leaf all-periods aggregate from candidates."""
+    agg_candidates = [c for c in candidates if re.search(r"(?i)^(all|total)\s", c)]
+    if not agg_candidates:
+        return ""
+
+    if dim_name and len(agg_candidates) > 1:
+        scores: list[tuple[int, str]] = []
+        for c in agg_candidates:
+            n = _estimate_descendants(dim_name, c, limit=200)
+            scores.append((n if n > 0 else 9999, c))
+        scores.sort(key=lambda x: x[0])
+        best_n, best_name = scores[0]
+        if best_n < 9999:
+            return best_name
+
+    return agg_candidates[0]
+
+
+def _line_item_dim_from_profile(
+    cube_schema: dict,
+    model_profile: dict | None,
+) -> dict | None:
+    """Return the P&L line-item dim dict: semantic-profile first, schema-scoring fallback.
+
+    The semantic profile stores a pre-computed line_item_dimension per finance concept
+    (income_statement, balance_sheet, etc.).  Reading it here removes the query-time
+    dependency on planner heuristics and keeps business vocabulary in the profile.
+    """
+    dims = cube_schema.get("dimensions") or []
+    dim_by_name = {
+        str(d.get("name", "")): d
+        for d in dims
+        if d.get("name") and not d.get("is_measure")
+    }
+
+    # 1. Semantic profile lookup — no heuristics needed when profile is available.
+    finance = (model_profile or {}).get("finance_semantics") or {}
+    for concept in finance.get("concepts", {}).values():
+        line_dim_name = str(concept.get("line_item_dimension", "")).strip()
+        if line_dim_name and line_dim_name in dim_by_name:
+            return dim_by_name[line_dim_name]
+
+    # 2. Schema-scoring fallback — used when no profile exists yet.
+    candidates: list[tuple[int, int, dict]] = []
+    for index, dim in enumerate(dims):
+        if dim.get("is_measure"):
+            continue
+        name = str(dim.get("name", "")).lower()
+        name_match = any(hint in name for hint in _LINE_ITEM_NAME_HINTS)
+        bag = " ".join(
+            str(e).lower()
+            for e in (
+                list(dim.get("elements", []) or [])
+                + list(dim.get("consolidations", []) or [])
+                + list(dim.get("top_consolidations", []) or [])
+            )
+        )
+        elem_score = sum(1 for t in _PNL_ELEMENT_TOKENS if t in bag)
+        if not name_match and elem_score == 0:
+            continue
+        score = elem_score * 3 + (1 if name_match else 0)
+        candidates.append((score, -index, dim))
+
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][2]
+
+
+# ── Directive builders ────────────────────────────────────────────────────────
 
 def profile_defaults_directive(
     cube_schema: dict,
@@ -28,7 +157,6 @@ def profile_defaults_directive(
     known-good probes and must be used unless the user named something
     different — this prevents the LLM from using a mechanical schema default
     on a consolidation with no data feed."""
-    from .planner import _profile_dim_defaults, _best_all_period
     overrides = _profile_dim_defaults(model_profile)
     schema_dims = {str(d.get("name", "")): d for d in (cube_schema.get("dimensions") or [])}
     relevant = {k: v for k, v in overrides.items() if k in schema_dims}
@@ -67,13 +195,12 @@ def profile_defaults_directive(
     )
 
 
-def line_item_directive(question: str, cube_schema: dict) -> str:
+def line_item_directive(question: str, cube_schema: dict, model_profile: dict | None = None) -> str:
     """For financial-statement questions, lock the source-of-truth line-item
     dim onto ROWS using its top consolidation."""
     if not _STATEMENT_QUESTION_RE.search(question or ""):
         return ""
-    from .planner import _resolve_line_item_dim
-    dim = _resolve_line_item_dim(cube_schema.get("dimensions", []) or [], None)
+    dim = _line_item_dim_from_profile(cube_schema, model_profile)
     if not dim:
         return ""
     name = str(dim.get("name", ""))
