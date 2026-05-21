@@ -20,6 +20,7 @@ from .routes import analyze as analyze_routes
 from .routes import assets as assets_routes
 from .routes import config as config_routes
 from .routes import email as email_routes
+from .routes import explain_cell as explain_cell_routes
 from .routes import export as export_routes
 from .routes import health as health_routes
 from .routes import schema as schema_routes
@@ -53,6 +54,7 @@ app.include_router(health_routes.router)
 app.include_router(config_routes.router)
 app.include_router(schema_routes.router)
 app.include_router(analyze_routes.router)
+app.include_router(explain_cell_routes.router)
 app.include_router(export_routes.router)
 app.include_router(email_routes.router)
 app.include_router(assets_routes.router)

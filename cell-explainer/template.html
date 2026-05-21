@@ -1,0 +1,204 @@
+<div>
+
+    <!-- ============ HEADER CARD ============ -->
+    <div class="card" style="margin-bottom: 5px;">
+        <div class="card-header" style="padding: 5px 10px;">
+            <i class="fa fa-search-plus"></i>
+            <span>Cell Explainer</span>
+            <span class="badge badge-info ml-2" style="font-size: 0.75em;">AI · Claude</span>
+            <div class="pull-right">
+                <a href ng-click="testTm1Connection()" title="Test TM1 connection" style="margin-right: 10px;">
+                    <i class="fa fa-plug"></i>
+                </a>
+                <a href ng-click="reset()" title="Start over" ng-if="state.step !== 'paste'">
+                    <i class="fa fa-refresh"></i>
+                </a>
+            </div>
+        </div>
+
+        <div class="card-body" style="padding: 10px;">
+
+            <!-- ============ ERROR BANNER ============ -->
+            <div class="alert alert-danger" ng-if="state.error" style="margin-bottom: 10px;">
+                <i class="fa fa-warning"></i> {{ state.error }}
+            </div>
+
+
+            <!-- ============ STEP 1: PASTE ============ -->
+            <div ng-if="state.step === 'paste'">
+                <p class="text-muted" style="margin-bottom: 8px;">
+                    In Arc cube viewer: <strong>right-click a cell</strong> →
+                    <strong>Cell Reference</strong> → select all rows →
+                    <strong>Ctrl+C</strong>. Click the box below and paste (Ctrl+V).
+                </p>
+                <textarea class="form-control"
+                          placeholder="Click here and paste your Cell Reference (Ctrl+V)..."
+                          ng-paste="onPaste($event)"
+                          rows="8"
+                          style="font-family: monospace; font-size: 12px; background: #fafafa;"></textarea>
+            </div>
+
+
+            <!-- ============ STEP 2 / 3: REVIEW + ACTIONS ============ -->
+            <div ng-if="state.step === 'review' || state.step === 'result'">
+
+                <!-- Context summary row -->
+                <div class="input-group" style="margin-bottom: 8px;">
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">Cube</span>
+                    </div>
+                    <input type="text" ng-model="state.cube" class="form-control"
+                           placeholder="Cube name (e.g. Consol_Reporting)">
+                    <div class="input-group-prepend">
+                        <span class="input-group-text">Baseline</span>
+                    </div>
+                    <select ng-model="state.baseline" class="form-control"
+                            ng-options="b for b in baselines" style="max-width: 140px;"></select>
+                    <div class="input-group-append">
+                        <span class="input-group-text" title="Cell value from Arc">
+                            <i class="fa fa-hashtag"></i>&nbsp;{{ state.value || '—' }}
+                        </span>
+                    </div>
+                </div>
+
+                <!-- Captured tuple -->
+                <div class="card" style="margin-bottom: 10px;">
+                    <div class="card-header" style="padding: 4px 8px; font-size: 0.85em;">
+                        <i class="fa fa-list"></i> Captured Tuple
+                        <span class="badge badge-secondary ml-1">{{ state.tuple.length }} dims</span>
+                    </div>
+                    <table class="table table-sm table-striped" style="margin-bottom: 0; font-size: 0.85em;">
+                        <thead>
+                            <tr>
+                                <th>Dimension</th>
+                                <th>Hierarchy</th>
+                                <th>Element</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr ng-repeat="t in state.tuple">
+                                <td>{{ t.dimension }}</td>
+                                <td class="text-muted">{{ t.hierarchy }}</td>
+                                <td><strong>{{ t.element }}</strong></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Action buttons -->
+                <div ng-if="state.step === 'review'">
+                    <div class="btn-group btn-group-justified" style="width:100%; display: flex;">
+                        <button class="btn btn-outline-info" style="flex:1; margin-right: 4px;"
+                                ng-click="analyze('explain_calc')">
+                            <i class="fa fa-cogs"></i><br>
+                            <small>Explain<br>Calculation</small>
+                        </button>
+                        <button class="btn btn-outline-info" style="flex:1; margin-right: 4px;"
+                                ng-click="analyze('tx_history')">
+                            <i class="fa fa-history"></i><br>
+                            <small>Transaction<br>History</small>
+                        </button>
+                        <button class="btn btn-outline-primary" style="flex:1; margin-right: 4px;"
+                                ng-click="analyze('compare_baseline')">
+                            <i class="fa fa-balance-scale"></i><br>
+                            <small>Compare to<br>{{ state.baseline }}</small>
+                        </button>
+                        <button class="btn btn-outline-warning" style="flex:1;"
+                                ng-click="analyze('root_cause')">
+                            <i class="fa fa-search"></i><br>
+                            <small>Find<br>Root Cause</small>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+
+            <!-- ============ ANALYZING ============ -->
+            <div ng-if="state.step === 'analyzing'" class="text-center" style="padding: 40px;">
+                <i class="fa fa-refresh fa-spin fa-3x text-primary"></i>
+                <p style="margin-top: 15px;" class="text-muted">
+                    Agent is calling tools, this may take a few seconds...
+                </p>
+            </div>
+
+
+            <!-- ============ STEP 4: RESULT ============ -->
+            <div ng-if="state.step === 'result' && state.result">
+                <uib-tabset active="resultTabIndex">
+
+                    <!-- TAB: Summary -->
+                    <uib-tab index="0">
+                        <uib-tab-heading><i class="fa fa-file-text-o"></i> Summary</uib-tab-heading>
+                        <div style="padding: 10px;">
+
+                            <!-- Executive summary -->
+                            <div class="alert alert-primary" ng-bind-html="state.result.summary"></div>
+
+                            <!-- Drivers -->
+                            <div ng-if="state.result.drivers && state.result.drivers.length">
+                                <h6><i class="fa fa-bar-chart"></i> Top Drivers</h6>
+                                <table class="table table-sm table-striped">
+                                    <tr ng-repeat="d in state.result.drivers">
+                                        <td><strong>{{ d.name }}</strong></td>
+                                        <td class="text-muted">{{ d.dimension }}</td>
+                                        <td class="text-right text-success">
+                                            <strong>{{ d.impact }}</strong>
+                                        </td>
+                                    </tr>
+                                </table>
+                            </div>
+
+                            <!-- Transactions -->
+                            <div ng-if="state.result.transactions && state.result.transactions.length">
+                                <h6><i class="fa fa-history"></i> Recent Transactions</h6>
+                                <table class="table table-sm">
+                                    <tr ng-repeat="tx in state.result.transactions">
+                                        <td><small class="text-muted">{{ tx.time }}</small></td>
+                                        <td>
+                                            <strong>{{ tx.user }}</strong>
+                                            <br><small class="text-muted">{{ tx.process || tx.note }}</small>
+                                        </td>
+                                        <td class="text-right">
+                                            <code>{{ tx.from }}</code> →
+                                            <code><strong>{{ tx.to }}</strong></code>
+                                        </td>
+                                    </tr>
+                                </table>
+                            </div>
+
+                            <!-- Follow-up chips -->
+                            <div ng-if="state.result.followups && state.result.followups.length">
+                                <h6><i class="fa fa-arrow-right"></i> Follow-up</h6>
+                                <button class="btn btn-outline-secondary btn-sm mr-1 mb-1"
+                                        ng-repeat="q in state.result.followups"
+                                        ng-click="followUp(q)">
+                                    {{ q }}
+                                </button>
+                            </div>
+                        </div>
+                    </uib-tab>
+
+                    <!-- TAB: Raw -->
+                    <uib-tab index="1">
+                        <uib-tab-heading><i class="fa fa-code"></i> Raw</uib-tab-heading>
+                        <pre style="padding: 10px; font-size: 0.85em;">{{ state.result | json }}</pre>
+                    </uib-tab>
+
+                    <!-- TAB: Trace -->
+                    <uib-tab index="2" ng-if="state.result.trace">
+                        <uib-tab-heading><i class="fa fa-microscope"></i> Trace</uib-tab-heading>
+                        <div style="padding: 10px;">
+                            <table class="table table-sm">
+                                <tr><td>Tool calls</td><td><strong>{{ state.result.trace.tool_calls }}</strong></td></tr>
+                                <tr><td>Input tokens</td><td><strong>{{ state.result.trace.input_tokens }}</strong></td></tr>
+                                <tr><td>Output tokens</td><td><strong>{{ state.result.trace.output_tokens }}</strong></td></tr>
+                                <tr><td>Latency</td><td><strong>{{ state.result.trace.latency_ms }} ms</strong></td></tr>
+                            </table>
+                        </div>
+                    </uib-tab>
+
+                </uib-tabset>
+            </div>
+        </div>
+    </div>
+</div>
