@@ -1,9 +1,5 @@
 """Unit tests for MDX directive builders — no LLM or DB required."""
 
-from unittest.mock import patch
-
-import pytest
-
 from backend.ai.mdx.directives import (
     _best_all_period,
     _line_item_dim_from_profile,

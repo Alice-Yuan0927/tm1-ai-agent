@@ -1,11 +1,10 @@
 """MDX repair helpers and shared prompt-building utilities.
 
-generate_cube_mdx and the old tool-calling loop have been removed.
-The agentic loop in backend/ai/mdx/agent.py owns MDX generation now.
-repair_cube_mdx is still used by execute_mdx_with_repair (planner fast-path).
+The old text-generation MDX entrypoints and MDX-specific agent were removed.
+The agentic loop in backend/ai/agent/loop.py owns MDX generation now.
+repair_cube_mdx is still used by the legacy services.mdx_execution repair loop.
 """
 
-import dataclasses
 import json
 import logging
 
@@ -52,39 +51,6 @@ def _profile_section(model_profile: dict | None) -> str:
     )
 
 
-def _merge_historical_grounded(ctx: MdxContext) -> MdxContext:
-    """Merge confirmed elements from similar past queries into ctx.grounded_members."""
-    if not ctx.similar_queries:
-        return ctx
-
-    valid_dims = {
-        str(d.get("name", ""))
-        for d in ctx.cube_schema.get("dimensions", [])
-        if d.get("name")
-    }
-
-    merged = list(ctx.grounded_members or [])
-    existing: set[tuple[str, str]] = {
-        (str(m.get("dimension", "")), str(m.get("element", "")))
-        for m in merged
-    }
-
-    for sq in ctx.similar_queries:
-        for item in sq.get("grounded_members") or []:
-            dim = str(item.get("dimension", ""))
-            elem = str(item.get("element", ""))
-            if not dim or not elem or dim not in valid_dims:
-                continue
-            if (dim, elem) in existing:
-                continue
-            existing.add((dim, elem))
-            merged.append({**item, "matched_by": "history"})
-
-    if len(merged) == len(ctx.grounded_members or []):
-        return ctx
-    return dataclasses.replace(ctx, grounded_members=merged)
-
-
 def _build_dims_section(ctx: MdxContext) -> tuple[str, str, str, str, str]:
     """Return prompt schema JSON and directive sections."""
     dims_json = json.dumps(
@@ -117,7 +83,7 @@ def _ai_complete_mdx(prompt: str, ctx: MdxContext, *, log_tag: str) -> str:
 
 
 def repair_cube_mdx(ctx: MdxContext, failed_mdx: str, error_message: str) -> str:
-    """Ask the LLM to repair MDX that TM1 rejected (used by planner fast-path repair loop)."""
+    """Ask the LLM to repair MDX rejected by TM1 for the legacy repair loop."""
     cube_name = ctx.cube_name
     dims_json, statement_directive, consolidated_directive, defaults_directive, grounded_section = _build_dims_section(ctx)
     examples_section = _examples_section(ctx.similar_queries, mention_axis=False)

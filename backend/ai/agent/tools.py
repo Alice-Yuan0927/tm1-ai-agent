@@ -11,7 +11,7 @@ All other tools (search_elements, execute_mdx, etc.) are imported from
 the existing ELEMENT_REGISTRY in element_tools.py.
 
 The EXECUTE_MDX_TOOL schema is defined here but dispatched directly by
-loop.py — same pattern as the old mdx/agent.py.
+loop.py rather than going through the ToolRegistry.
 """
 
 import json

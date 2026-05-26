@@ -8,10 +8,8 @@ top-to-bottom.
 
 import json as _json
 import logging
-import re
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any
 
 from anyio import from_thread
 from fastapi import Request
@@ -30,7 +28,6 @@ from ..config import (
     AI_MAX_ROWS,
     PREVIEW_ROW_LIMIT,
 )
-from ..response_messages import no_usable_data_message
 from ..schemas import QuestionRequest
 from .model_profile import load_current_model_profile
 

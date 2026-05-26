@@ -17,9 +17,9 @@ import logging
 from typing import Any
 
 from ..ai.schema.dim_roles import get_dim_role
-from ..config import CUBE_CONTEXT_ELEMENTS_PER_DIM, CUBE_CONTEXT_MEASURE_LIMIT
+from ..config import CUBE_CONTEXT_MEASURE_LIMIT
 from ..tm1.service import get_cube_schema, get_cubes_with_descriptions
-from .store import load_all_summaries, load_cube_summary, save_cube_summary
+from .store import load_cube_summary, save_cube_summary
 
 _log = logging.getLogger(__name__)
 

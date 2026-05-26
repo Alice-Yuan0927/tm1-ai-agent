@@ -51,6 +51,67 @@ def _fmt_ts(ts: str) -> str:
         return ts[:16].replace("T", " ")
 
 
+def _tx_summary_row(item: dict) -> dict:
+    try:
+        old_val = float(item.get("OldValue") or 0)
+        new_val = float(item.get("NewValue") or 0)
+    except (TypeError, ValueError):
+        old_val, new_val = 0.0, 0.0
+    return {
+        "time": _fmt_ts(item.get("TimeStamp", "")),
+        "user": item.get("User", ""),
+        "tuple": " · ".join(str(t) for t in (item.get("Tuple") or [])),
+        "from": f"{old_val:,.0f}",
+        "to": f"{new_val:,.0f}",
+    }
+
+
+def list_cube_scenarios(cube: str, dimension: str = "") -> dict:
+    """Return leaf elements of the scenario/version dimension for compare cards."""
+    try:
+        with TM1Service(**get_tm1_config()) as tm1:
+            dim_names = list(tm1.cubes.get_dimension_names(cube))
+            scenario_dim = dimension
+            if not scenario_dim:
+                for dim_name in dim_names:
+                    if any(kw in dim_name.lower() for kw in _BASELINE_DIM_KEYWORDS):
+                        scenario_dim = dim_name
+                        break
+            if not scenario_dim:
+                return {"dimension": "", "elements": []}
+
+            elements = list(tm1.elements.get_element_names(scenario_dim, scenario_dim))
+            leaves: list[str] = []
+            for element in elements:
+                try:
+                    el = tm1.elements.get(scenario_dim, scenario_dim, element)
+                    if str(getattr(el, "element_type", "")).lower() != "consolidated":
+                        leaves.append(element)
+                except Exception:
+                    leaves.append(element)
+            return {"dimension": scenario_dim, "elements": leaves[:30]}
+    except Exception as exc:
+        _log.warning("cube-scenarios failed: %s", exc)
+        return {"dimension": "", "elements": []}
+
+
+def get_cube_info(cube: str) -> dict:
+    """Return cube dimensions and recent transaction activity."""
+    try:
+        with TM1Service(**get_tm1_config()) as tm1:
+            dimensions = list(tm1.cubes.get_dimension_names(cube))
+            raw = tm1.transaction_logs.get_entries(cube=cube, top=20) or []
+            transactions = [
+                _tx_summary_row(item)
+                for item in raw
+                if isinstance(item, dict)
+            ]
+        return {"cube": cube, "dimensions": dimensions, "transactions": transactions}
+    except Exception as exc:
+        _log.warning("cube-info failed: %s", exc)
+        return {"cube": cube, "dimensions": [], "transactions": []}
+
+
 def _parse_tx_date(value: str | None, *, end_of_day: bool = False) -> datetime | None:
     if not value:
         return None
@@ -744,76 +805,6 @@ def _get_transaction_log(
         cached_result = result[:top]
         _tx_log_cache_set(cache_key, cached_result)
         return cached_result
-
-        # Fetch cube dimension names once so we can label each position in the Tuple.
-        try:
-            dim_names = list(tm1.cubes.get_dimension_names(cube))
-        except Exception:
-            dim_names = []
-
-        result = []
-        _diag_logged = False
-        near_misses: list[tuple[int, list, set[str]]] = []
-        for item in entries:
-            if not isinstance(item, dict):
-                continue
-            # Python-side strict filter: server pre-filter is intentionally broad (single OR).
-            # Require ALL non-consolidated elements to be present, plus at least one leaf
-            # descendant per consolidated dimension.
-            item_tuple_set = {_norm_elem(t) for t in (item.get("Tuple") or [])}
-            if not _diag_logged:
-                _diag_logged = True
-                _log.warning("tx-log diag: tuple=%r  missing=%r",
-                             item.get("Tuple"), required - item_tuple_set)
-            missing = required - item_tuple_set
-            missing_leaf_groups = {
-                f"leaf_group_{i + 1}"
-                for i, grp in enumerate(leaf_groups)
-                if not grp.intersection(item_tuple_set)
-            }
-            missing_all = set(missing) | missing_leaf_groups
-            if missing_all:
-                near_misses.append((len(missing_all), item.get("Tuple") or [], missing_all))
-                continue
-            try:
-                old_val = float(item.get("OldValue") or 0)
-                new_val = float(item.get("NewValue") or 0)
-            except (TypeError, ValueError):
-                old_val, new_val = 0.0, 0.0
-            raw_tuple = item.get("Tuple") or []
-            if dim_names:
-                labeled = " · ".join(
-                    f"{dim_names[i]}: {v}" if i < len(dim_names) else str(v)
-                    for i, v in enumerate(raw_tuple)
-                )
-            else:
-                labeled = " · ".join(str(t) for t in raw_tuple)
-            result.append({
-                "time":    _fmt_ts(item.get("TimeStamp", "")),
-                "user":    item.get("User", ""),
-                "process": _tx_process_source(item),
-                "tuple":   labeled,
-                "from":    f"{old_val:,.0f}",
-                "to":      f"{new_val:,.0f}",
-            })
-        _log.warning("tx-log after python filter: %d / %d entries kept", len(result), len(entries))
-        # Remove rows that are identical in every visible field
-        seen: set[tuple] = set()
-        deduped = []
-        for r in result:
-            sig = (r["time"], r["user"], r.get("tuple", ""), r["from"], r["to"])
-            if sig not in seen:
-                seen.add(sig)
-                deduped.append(r)
-        if not deduped and near_misses:
-            near_misses.sort(key=lambda row: row[0])
-            for miss_count, raw_tuple, missing in near_misses[:5]:
-                _log.warning(
-                    "tx-log near miss: missing=%r tuple=%r",
-                    missing,
-                    raw_tuple,
-                )
-        return deduped
     except Exception as exc:
         _log.warning("Transaction log query failed for cube '%s': %s", cube, exc)
         return []

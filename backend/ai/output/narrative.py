@@ -2,7 +2,6 @@
 
 import json
 import logging
-import re
 from collections.abc import Iterator
 
 from ...config import ANALYSIS_MAX_TOKENS, get_llm_temperature

@@ -49,7 +49,7 @@ ANALYSIS_TEMPERATURE=0.2
 SUGGESTIONS_TEMPERATURE=0.4
 ```
 
-TM1 connection settings are saved from the app UI to `backend/runtime/tm1_config.json`.
+TM1 connection settings are saved from the app UI to `backend/data/runtime/tm1_config.json`.
 Use the gear icon in the top-right to enter address, port, user, namespace, SSL,
 and related settings, then click `Save & sync`.
 
@@ -100,7 +100,7 @@ Then open `http://localhost:8000`.
 
 ## TM1 Model Setup
 
-On startup, the backend syncs TM1 metadata into `backend/schema_cache.db`. The cache stores:
+On startup, the backend syncs TM1 metadata into `backend/data/schema_cache.db`. The cache stores:
 
 - cubes and descriptions
 - dimensions in each cube
@@ -147,10 +147,10 @@ The app can generate a semantic profile for the active TM1 model. This is not a 
 Use `Generate profile` in the TM1 settings popup after syncing a new model. The backend reads the current schema cache, asks OpenAI to generate the profile, and saves it under:
 
 ```text
-backend/model_profiles/<tm1_address>_<port>.json
+backend/data/model_profiles/<tm1_address>_<port>.json
 ```
 
-Cube selection automatically loads the current model's profile when available, falling back to `backend/model_profiles/default.json`.
+Cube selection automatically loads the current model's profile when available, falling back to `backend/data/model_profiles/default.json`.
 
 The profile contains:
 
@@ -204,7 +204,7 @@ backend/
   ai/
     service.py              # OpenAI calls: cube selection, MDX, profile generation, analysis
     rag.py                  # SQLite FTS5 query history for MDX examples
-  model_profiles/
+  data/model_profiles/
     default.json            # Generated semantic profile fallback
   tm1/
     cache.py                # SQLite schema cache and metadata lookups
@@ -219,9 +219,7 @@ frontend/
   frontend.html             # App shell and layout
   assets/
     logo.svg
-    block.png
     block2.png
-    blockchain.png
   js/
     config.js               # API base URL, localStorage keys, class helpers
     api.js                  # Analyze SSE and Excel download

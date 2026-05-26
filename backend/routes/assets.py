@@ -53,7 +53,7 @@ def frontend_vendor_js_asset(asset_name: str):
 
 @router.get("/assets/{asset_name}")
 def frontend_image_asset(asset_name: str):
-    allowed_assets = {"logo.svg", "block.png", "block2.png", "blockchain.png"}
+    allowed_assets = {"logo.svg", "block2.png"}
     if asset_name not in allowed_assets:
         raise HTTPException(404, "Not found")
     return FileResponse(

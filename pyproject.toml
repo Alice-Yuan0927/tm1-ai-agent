@@ -82,7 +82,6 @@ source_modules = [
     "backend.ai.mdx.directives",
     "backend.ai.mdx.generation",
     "backend.ai.mdx.normalize",
-    "backend.ai.mdx.planner",
     "backend.ai.output.conversation",
     "backend.ai.output.narrative",
     "backend.ai.output.semantic_profile",

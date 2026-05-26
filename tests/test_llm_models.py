@@ -4,14 +4,14 @@ from pathlib import Path
 from backend import llm_models
 
 
-def test_validate_warns_when_provider_is_not_wired_for_execution():
+def test_deepseek_is_accepted_as_execution_provider():
     warnings = llm_models.validate_llm_selection(
         "deepseek",
         "deepseek-chat",
         llm_models.STATIC_LLM_MODEL_CATALOG,
     )
 
-    assert any("executes only OpenAI and Anthropic" in warning for warning in warnings)
+    assert not any("executes only" in warning for warning in warnings)
 
 
 def test_deepseek_is_in_static_catalog():
@@ -33,7 +33,7 @@ def test_validate_warns_when_official_list_does_not_include_selected_model():
 
 
 def test_refresh_persists_official_model_catalog(monkeypatch):
-    test_dir = Path(__file__).resolve().parents[1] / "backend" / "runtime" / "test_llm_models"
+    test_dir = Path(__file__).resolve().parents[1] / "backend" / "data" / "runtime" / "test_llm_models"
     test_dir.mkdir(parents=True, exist_ok=True)
     catalog_path = test_dir / "llm_models.json"
 
