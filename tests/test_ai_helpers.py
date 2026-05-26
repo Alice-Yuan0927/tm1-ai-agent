@@ -160,6 +160,26 @@ def test_structured_preview_exposes_row_hierarchy_levels():
     }
 
 
+def test_structured_preview_marks_consolidated_row_values():
+    mdx = (
+        "SELECT {[Year].[Year].[2025]} ON COLUMNS, "
+        "{[Account].[Account].[Revenue], [Account].[Account].[Product Revenue]} ON ROWS "
+        "FROM [P&L]"
+    )
+    layout = get_view_layout_from_mdx(mdx)
+    rows = [
+        {"_dimensions": {"Year": "2025", "Account": "Revenue"}, "value": 10},
+        {"_dimensions": {"Year": "2025", "Account": "Product Revenue"}, "value": 8},
+    ]
+    preview = build_structured_preview(
+        rows,
+        layout,
+        dim_metadata={"Account": {"consolidated": {"Revenue"}}},
+    )
+
+    assert preview["row_consolidations"] == {"Account": ["Revenue"]}
+
+
 # ── narrative.parse_suggestions ──────────────────────────────────────────────
 
 def test_structured_preview_marks_visible_hierarchy_root_as_level_zero():

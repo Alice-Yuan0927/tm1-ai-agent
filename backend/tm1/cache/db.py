@@ -1,9 +1,10 @@
 """SQLite connection + schema DDL + migrations for the TM1 schema cache."""
 
+import re
 import sqlite3
 import threading
 
-from ...config import DATA_DIR
+from ...config import DATA_DIR, get_tm1_config
 DB_PATH = DATA_DIR / "schema_cache.db"
 
 # Per-thread cached connection. SQLite connections are not safe to share across
@@ -33,6 +34,33 @@ _ALLOWED_MIGRATION_TABLES = frozenset(
     {"cubes", "dim_in_cube", "elements", "element_edges",
      "dim_attributes", "element_aliases", "element_attribute_values", "member_search"}
 )
+
+_SCHEMA_DATA_TABLES = (
+    "cube_summaries",
+    "element_embeddings",
+    "member_search",
+    "element_attribute_values",
+    "element_aliases",
+    "element_edges",
+    "dim_attributes",
+    "elements",
+    "dim_in_cube",
+    "cubes",
+)
+
+
+def cache_scope_id() -> str:
+    """Stable non-secret identity for the active TM1 connection."""
+    config = get_tm1_config()
+    parts = [
+        str(config.get("address", "")).strip().lower(),
+        str(config.get("port", "")).strip(),
+        str(config.get("namespace", "")).strip().lower(),
+        str(config.get("user", "")).strip().lower(),
+        "ssl" if config.get("ssl") else "plain",
+    ]
+    raw = "|".join(parts)
+    return re.sub(r"[^a-z0-9_.|:-]+", "_", raw).strip("_") or "default"
 
 
 def _add_col_if_missing(conn: sqlite3.Connection, table: str, col: str, defn: str) -> None:
@@ -157,14 +185,56 @@ def init_schema_db() -> None:
             default_filters  TEXT DEFAULT '{}',
             generated_at     TEXT DEFAULT (datetime('now'))
         );
+
+        CREATE TABLE IF NOT EXISTS cache_meta (
+            key        TEXT PRIMARY KEY,
+            value      TEXT NOT NULL,
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
     """)
     _add_col_if_missing(conn, "elements",    "element_type", "TEXT NOT NULL DEFAULT 'Numeric'")
     _add_col_if_missing(conn, "dim_in_cube", "is_time_dim",  "INTEGER DEFAULT 0")
+    _clear_if_scope_mismatch(conn)
     _backfill_member_search_if_empty(conn)
     conn.commit()
 
 
+def cache_scope_matches(conn: sqlite3.Connection | None = None) -> bool:
+    """True when cached data belongs to the active TM1 connection."""
+    connection = conn or connect()
+    try:
+        row = connection.execute(
+            "SELECT value FROM cache_meta WHERE key = 'scope_id'"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return False
+    return bool(row and row[0] == cache_scope_id())
+
+
+def mark_cache_scope(conn: sqlite3.Connection | None = None) -> None:
+    connection = conn or connect()
+    connection.execute(
+        "INSERT OR REPLACE INTO cache_meta(key, value, updated_at)"
+        " VALUES ('scope_id', ?, datetime('now'))",
+        (cache_scope_id(),),
+    )
+
+
+def clear_schema_cache(conn: sqlite3.Connection | None = None) -> None:
+    connection = conn or connect()
+    for table in _SCHEMA_DATA_TABLES:
+        connection.execute(f"DELETE FROM {table}")
+
+
+def _clear_if_scope_mismatch(conn: sqlite3.Connection) -> None:
+    cube_count = conn.execute("SELECT COUNT(*) FROM cubes").fetchone()[0]
+    if cube_count and not cache_scope_matches(conn):
+        clear_schema_cache(conn)
+
+
 def is_empty() -> bool:
-    """True when the cache has never been populated."""
+    """True when the cache has no data for the active TM1 connection."""
+    if not cache_scope_matches():
+        return True
     row = connect().execute("SELECT COUNT(*) FROM cubes").fetchone()
     return row[0] == 0

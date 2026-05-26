@@ -21,6 +21,7 @@ import sqlite3
 import numpy as np
 
 from ...config import DATA_DIR, EMBEDDING_BATCH_SIZE, get_llm_api_key, get_llm_provider
+from ...tm1.cache.db import cache_scope_matches
 
 _log = logging.getLogger(__name__)
 
@@ -119,6 +120,8 @@ def ensure_element_embeddings() -> int:
     Returns the count of newly embedded elements.
     """
     with sqlite3.connect(_DB_PATH) as conn:
+        if not cache_scope_matches(conn):
+            return 0
         rows = conn.execute(
             "SELECT e.dim_name, e.element_name,"
             "       ea.alias_value,"
@@ -222,6 +225,8 @@ def search_by_embedding(
 
     # Load stored embeddings for the relevant dims.
     with sqlite3.connect(_DB_PATH) as conn:
+        if not cache_scope_matches(conn):
+            return []
         if candidate_dims:
             placeholders = ",".join("?" * len(candidate_dims))
             elem_rows = conn.execute(

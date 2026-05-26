@@ -3,7 +3,7 @@
 import re
 
 from ...config import GROUNDED_MEMBER_LIMIT, GROUNDED_MEMBER_PER_DIM
-from .db import connect, qmarks
+from .db import cache_scope_matches, connect, qmarks
 
 _ELEMENT_NORM_RE = re.compile(r"[^a-z0-9]+")
 _IDENTIFIER_PUNCT_RE = re.compile(r"[-_/\.]")
@@ -43,6 +43,9 @@ def find_question_element_matches(
     text = (question or "").strip()
     if not text:
         return []
+    conn = connect()
+    if not cache_scope_matches(conn):
+        return []
     norm_question = " " + _normalise_element_token(text) + " "
     q_tokens = norm_question.split()
 
@@ -67,7 +70,7 @@ def find_question_element_matches(
         "LOWER(element_name),"
         "'-',' '),'_',' '),'/',' '),'.',' '),'(',' '),')',' '))"
     )
-    rows = connect().execute(
+    rows = conn.execute(
         f"SELECT dim_name, element_name FROM elements"
         f" WHERE LENGTH(element_name) >= 2"
         f"   AND {norm_sql} IN ({qmarks(len(candidate_norms))})",
@@ -109,6 +112,9 @@ def resolve_question_members(
     text = (question or "").strip()
     if not text:
         return []
+    conn = connect()
+    if not cache_scope_matches(conn):
+        return []
     question_norm = _normalise_element_token(text)
     if not question_norm:
         return []
@@ -124,7 +130,7 @@ def resolve_question_members(
     if not fts_query:
         return []
 
-    rows = connect().execute(
+    rows = conn.execute(
         "SELECT e.dim_name, e.element_name, e.element_type,"
         "       ea.alias_value,"
         "       GROUP_CONCAT(eav.attr_name || '=' || eav.attr_value, char(31))"

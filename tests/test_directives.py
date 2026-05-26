@@ -269,3 +269,55 @@ def test_profile_defaults_directive_skips_all_period_when_month_named():
     result = profile_defaults_directive(_pnl_schema(), profile, question="show March revenue")
     # Question names a specific month → all-period injection is suppressed
     assert "All Months" not in result
+
+
+def test_profile_defaults_directive_pins_currency_view_to_entity_currency():
+    schema = {
+        "cube": "Consol GL Group",
+        "dimensions": [
+            {
+                "name": "S Consol GL Group",
+                "elements": ["All Data Sources List", "LOCAL_VIEW", "LOCAL_TOTAL", "PARENT_VIEW"],
+                "default_element": "All Data Sources List",
+                "consolidations": ["All Data Sources List", "LOCAL_TOTAL"],
+                "element_attr_values": {
+                    "LOCAL_VIEW": {"Description": "Entity Currency"},
+                    "LOCAL_TOTAL": {"Description": "Entity Currency Total"},
+                    "PARENT_VIEW": {"Description": "Parent Currency"},
+                },
+            }
+        ],
+    }
+    profile = {"dim_roles": {"S Consol GL Group": "data_source"}}
+
+    result = profile_defaults_directive(schema, profile, question="show P&L")
+
+    assert "[S Consol GL Group].[S Consol GL Group].[LOCAL_VIEW]" in result
+    assert "[S Consol GL Group].[S Consol GL Group].[All Data Sources List]" not in result
+
+
+def test_profile_defaults_directive_honors_explicit_dimension_member_correction():
+    schema = {
+        "cube": "Consol GL Group",
+        "dimensions": [
+            {
+                "name": "S Consol GL Group",
+                "elements": ["All Data Sources List", "LOCAL_VIEW", "PARENT_TOTAL"],
+                "default_element": "All Data Sources List",
+                "element_attr_values": {
+                    "LOCAL_VIEW": {"Description": "Entity Currency"},
+                    "PARENT_TOTAL": {"Description": "Parent Currency Total"},
+                },
+            }
+        ],
+    }
+    profile = {"dim_roles": {"S Consol GL Group": "currency_view"}}
+
+    result = profile_defaults_directive(
+        schema,
+        profile,
+        question="show P&L for SLIM HK. i mean the S Consol GL Group should be PARENT_TOTAL",
+    )
+
+    assert "[S Consol GL Group].[S Consol GL Group].[PARENT_TOTAL]" in result
+    assert "[S Consol GL Group].[S Consol GL Group].[LOCAL_VIEW]" not in result

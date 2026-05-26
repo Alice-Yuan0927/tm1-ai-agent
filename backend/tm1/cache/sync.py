@@ -6,7 +6,7 @@ import re
 from TM1py import TM1Service
 
 from ...config import get_tm1_config
-from .db import connect
+from .db import connect, mark_cache_scope
 
 _log = logging.getLogger(__name__)
 
@@ -269,6 +269,7 @@ def sync_schema() -> dict:
 
     conn = connect()
     with conn:
+        conn.execute("DELETE FROM cube_summaries")
         conn.execute("DELETE FROM element_attribute_values")
         conn.execute("DELETE FROM element_embeddings")
         conn.execute("DELETE FROM member_search")
@@ -366,6 +367,7 @@ def sync_schema() -> dict:
                 " VALUES (?, ?, ?)",
                 member_docs,
             )
+        mark_cache_scope(conn)
 
     return {
         "cubes": len(cube_dims),

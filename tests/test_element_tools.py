@@ -88,9 +88,8 @@ def test_validate_mdx_no_cube_name_in_schema_skips_from_check():
 # ── search_elements FTS-first ordering ───────────────────────────────────────
 
 def test_search_elements_returns_fts_matches_without_calling_embedding():
-    fts_result = [
-        {"dimension": "Account", "element": "Revenue", "matched_by": "fts"},
-    ]
+    # find_question_element_matches returns list[tuple[phrase, dim, element]].
+    fts_result = [("revenue", "Account", "Revenue")]
     with patch("backend.ai.tools.element_tools.find_question_element_matches", return_value=fts_result), \
          patch("backend.ai.tools.element_tools.search_by_embedding") as mock_emb:
         result = _exec("search_elements", {"dimension": "Account", "term": "revenue"})
@@ -110,14 +109,15 @@ def test_search_elements_calls_embedding_only_when_fts_finds_nothing():
 
 def test_search_elements_filters_fts_results_by_dimension():
     fts_result = [
-        {"dimension": "Account", "element": "Revenue", "matched_by": "fts"},
-        {"dimension": "Region", "element": "Revenue Region", "matched_by": "fts"},
+        ("revenue", "Account", "Revenue"),
+        ("revenue region", "Region", "Revenue Region"),
     ]
     with patch("backend.ai.tools.element_tools.find_question_element_matches", return_value=fts_result), \
          patch("backend.ai.tools.element_tools.search_by_embedding") as mock_emb:
         result = _exec("search_elements", {"dimension": "Account", "term": "revenue"})
 
     mock_emb.assert_not_called()
+    assert "Revenue" in result["matches"]
     assert all("Region" not in m for m in result["matches"])
 
 
@@ -149,3 +149,26 @@ def test_get_cube_summary_without_db_returns_schema_fallback():
     result = _exec("get_cube_summary", {"cube": "SalesCube"})
     # Either a real summary or the schema-derived fallback — both must have "cube"
     assert result.get("cube") == "SalesCube" or "error" in result
+
+
+def test_list_views_from_cube_tool_returns_views():
+    with patch("backend.ai.tools.element_tools.list_cube_views", return_value=[
+        {"name": "Balance Sheet", "private": False},
+    ]):
+        result = _exec("list_views_from_cube", {"cube": "SalesCube"})
+
+    assert result["cube"] == "SalesCube"
+    assert result["count"] == 1
+    assert result["views"][0]["name"] == "Balance Sheet"
+
+
+def test_get_mdx_from_view_tool_returns_mdx():
+    with patch(
+        "backend.ai.tools.element_tools.get_cube_view_mdx",
+        return_value="SELECT {} ON COLUMNS FROM [SalesCube]",
+    ):
+        result = _exec("get_mdx_from_view", {"cube": "SalesCube", "view": "Default"})
+
+    assert result["cube"] == "SalesCube"
+    assert result["view"] == "Default"
+    assert "SELECT" in result["mdx"]

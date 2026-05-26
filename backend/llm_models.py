@@ -68,7 +68,7 @@ STATIC_LLM_MODEL_CATALOG: dict[str, dict[str, Any]] = {
     },
 }
 
-EXECUTION_PROVIDERS = {"openai", "anthropic"}
+EXECUTION_PROVIDERS = {"openai", "anthropic", "deepseek"}
 _REQUEST_TIMEOUT = 12
 
 

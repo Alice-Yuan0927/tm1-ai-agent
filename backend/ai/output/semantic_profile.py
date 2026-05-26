@@ -61,6 +61,7 @@ Return ONLY valid JSON with this shape:
   }}
 }}"""
 
+    raw = ""
     try:
         raw = complete_text(
             prompt,
@@ -72,6 +73,44 @@ Return ONLY valid JSON with this shape:
             raise RuntimeError("AI semantic profile must be a JSON object")
         return result
     except json.JSONDecodeError as exc:
+        repaired = _repair_truncated_profile_json(raw)
+        if isinstance(repaired, dict):
+            return repaired
         raise RuntimeError(f"AI semantic profile parsing failed. Raw: {raw}") from exc
     except Exception as exc:
         raise RuntimeError(f"AI semantic profile generation error: {exc}") from exc
+
+
+def _repair_truncated_profile_json(raw: str) -> dict | None:
+    """Ask the LLM to complete and fix a truncated/malformed profile JSON.
+
+    Returns a parsed dict on success, or None if repair also failed.
+    """
+    if not raw or not raw.strip():
+        return None
+
+    repair_prompt = f"""The following semantic profile JSON was truncated or
+malformed. Return a single VALID compact JSON object with the same shape as
+the input, preserving every field already produced. Do not add commentary,
+markdown, or extra fields. If a string was cut off, finish it sensibly; if
+an array or object was open, close it cleanly. Drop the final partial entry
+only if completing it would change the meaning.
+
+Original (possibly truncated) JSON:
+{raw}
+
+Required top-level keys: profile_version, model_name, source, business_terms,
+metric_mappings, cube_roles, default_filters, selection_guidance, chart_guidance.
+
+Return ONLY valid JSON."""
+
+    try:
+        fixed = complete_text(
+            repair_prompt,
+            max_tokens=max(SEMANTIC_PROFILE_MAX_TOKENS, 14000),
+            temperature=0,
+        )
+        result = parse_llm_json(fixed)
+        return result if isinstance(result, dict) else None
+    except Exception:
+        return None

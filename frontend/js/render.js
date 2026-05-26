@@ -27,6 +27,14 @@ function skeleton(question = "") {
         <span>Preparing the financial response</span>
       </div>
     </div>
+    <div id="agent-live-status" class="mt-4 hidden text-[12px] italic text-cw-sub">
+      <span class="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-cw-blue"></span>
+      <span data-live-text></span>
+    </div>
+    <details class="mt-2 text-[11px] text-cw-sub">
+      <summary class="cursor-pointer select-none opacity-70 hover:opacity-100">Agent tool calls</summary>
+      <ul id="agent-tool-history" class="mt-2 space-y-1 pl-4 font-mono"></ul>
+    </details>
   </div>`;
 }
 
@@ -54,7 +62,9 @@ function _sourceCardsHtml(sources, reasoning, skippedSources) {
       </div>
       <div class="mb-1 font-mono text-[12.5px] font-medium text-cw-blue">${esc(source.cube)}</div>
       <div class="text-[12px] leading-5 text-cw-sub">${esc(source.reasoning || "")}</div>
+      ${_toolTraceHtml(source.mdx_attempts)}
       ${_planAssumptionsHtml(source.plan)}
+      ${_ragFeedbackHtml(source)}
     </div>`).join("");
 
   const skippedNotice = skippedSources.length
@@ -72,6 +82,54 @@ function _sourceCardsHtml(sources, reasoning, skippedSources) {
     <div class="mt-3 rounded-lg border border-cw-blueMid bg-cw-blueLite px-4 py-3 text-[13px] leading-relaxed text-cw-sub">${esc(reasoning)}</div>
     ${skippedNotice}`;
 }
+
+function _toolTraceHtml(attempts) {
+  if (!Array.isArray(attempts) || !attempts.length) return "";
+  const items = attempts.slice(0, 8).map(raw => {
+    const text = String(raw || "");
+    const [tool, ...rest] = text.split(":");
+    const detail = rest.join(":").trim();
+    return `<li class="flex min-w-0 items-start gap-2">
+      <span class="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-violet-500 text-[9px] text-white">
+        <i class="fa-solid fa-check"></i>
+      </span>
+      <span class="min-w-0">
+        <span class="font-medium text-cw-text">Ran ${esc(tool.trim() || "tool")}</span>
+        ${detail ? `<span class="ml-1 break-words text-cw-muted">${esc(detail.slice(0, 160))}</span>` : ""}
+      </span>
+    </li>`;
+  }).join("");
+  return `<details class="mt-3 rounded-md border border-violet-100 bg-violet-50/60 px-3 py-2 text-[11px] leading-5 text-cw-sub">
+    <summary class="cursor-pointer font-medium text-cw-text">Tool trace</summary>
+    <ul class="mt-2 space-y-1.5">${items}</ul>
+  </details>`;
+}
+
+function _ragFeedbackHtml(source) {
+  const cube = source.cube || "";
+  const mdx = source.generated_mdx || "";
+  const rows = source.data_row_count || 0;
+  if (!cube || !mdx) return "";
+  // Pass question via data attribute on the wrapping article (looked up at click time).
+  return `
+    <div class="mt-3 flex items-center justify-end gap-2 border-t border-cw-borderLow pt-2 text-[11px] text-cw-muted"
+         data-rag-feedback
+         data-cube="${esc(cube)}"
+         data-mdx="${esc(mdx)}"
+         data-row-count="${rows}">
+      <span class="mr-1">Was this answer right?</span>
+      <button type="button" data-rag-action="save"
+        class="inline-flex items-center gap-1 rounded-md border border-cw-borderLow bg-white px-2 py-0.5 transition hover:border-green-400 hover:text-green-700">
+        <i class="fa-regular fa-thumbs-up"></i><span>Save</span>
+      </button>
+      <button type="button" data-rag-action="forget"
+        class="inline-flex items-center gap-1 rounded-md border border-cw-borderLow bg-white px-2 py-0.5 transition hover:border-red-400 hover:text-red-700">
+        <i class="fa-regular fa-thumbs-down"></i><span>Wrong — forget</span>
+      </button>
+      <span data-rag-status class="ml-2 hidden italic"></span>
+    </div>`;
+}
+
 
 function _planAssumptionsHtml(plan) {
   if (!plan || !Array.isArray(plan.assumptions) || !plan.assumptions.length) return "";
@@ -249,6 +307,7 @@ function renderConversation() {
   updateShareStatus("");
   document.getElementById("out").innerHTML = currentMessages.map(msg => renderSingleMessage(msg)).join("");
   bindFollowUpButtons();
+  bindRagFeedback();
   initCharts();
 }
 
@@ -257,6 +316,58 @@ function bindFollowUpButtons() {
     if (button.dataset.boundFollowup === "true") return;
     button.dataset.boundFollowup = "true";
     button.addEventListener("click", () => setQ(button.dataset.followup || ""));
+  });
+}
+
+function bindRagFeedback() {
+  document.querySelectorAll("[data-rag-feedback]").forEach(container => {
+    if (container.dataset.boundRag === "true") return;
+    container.dataset.boundRag = "true";
+    const cube = container.dataset.cube || "";
+    const mdx = container.dataset.mdx || "";
+    const rowCount = parseInt(container.dataset.rowCount || "0", 10) || 0;
+    const statusEl = container.querySelector("[data-rag-status]");
+    const question = container.closest("article")?.previousElementSibling?.querySelector("div")?.textContent
+      || container.closest("[data-question]")?.dataset.question
+      || "";
+
+    container.querySelectorAll("[data-rag-action]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const action = btn.dataset.ragAction;
+        const url = action === "save" ? "/api/rag/save" : "/api/rag/forget";
+        const body = action === "save"
+          ? { question, cube, mdx, row_count: rowCount }
+          : { cube, mdx };
+        btn.disabled = true;
+        if (statusEl) {
+          statusEl.classList.remove("hidden");
+          statusEl.textContent = action === "save" ? "Saving…" : "Removing…";
+        }
+        try {
+          const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = await res.json();
+          if (statusEl) {
+            statusEl.textContent = action === "save"
+              ? "Saved to knowledge base ✓"
+              : `Removed ${data.removed ?? 0} entr${(data.removed ?? 0) === 1 ? "y" : "ies"} ✓`;
+            statusEl.classList.remove("italic");
+            statusEl.classList.add("text-green-700");
+          }
+          container.querySelectorAll("[data-rag-action]").forEach(b => b.disabled = true);
+        } catch (err) {
+          if (statusEl) {
+            statusEl.textContent = "Failed — try again";
+            statusEl.classList.add("text-red-600");
+          }
+          btn.disabled = false;
+        }
+      });
+    });
   });
 }
 

@@ -488,6 +488,59 @@ def test_history_can_supply_scenario_and_period_for_followups():
     assert clarification is None
 
 
+def test_schema_clarification_uses_semantic_members_for_any_dimension(monkeypatch):
+    from backend.ai.intent import clarification
+
+    monkeypatch.setattr(clarification, "find_question_element_matches", lambda _question: [])
+
+    calls = []
+
+    def fake_search(question, candidate_dims=None, top_k=4, threshold=0.68):
+        calls.append((question, candidate_dims, top_k, threshold))
+        return [
+            ("hk region", "Region", "Region 11"),
+            ("hk region", "Region", "Region 9"),
+            ("slim company", "Company", "SLIM-HK"),
+        ]
+
+    monkeypatch.setattr(clarification, "search_by_embedding", fake_search)
+
+    message = clarification.find_schema_clarification(
+        "show me the P&L for hk region",
+        [{"cube": "P&L", "dimensions": ["Region", "Company", "Account"]}],
+        [],
+    )
+
+    assert message
+    assert "Region.Region 11" in message
+    assert "Region.Region 9" in message
+    assert "Company.SLIM-HK" in message
+    assert calls[0][1] == ["Region", "Company", "Account"]
+
+
+def test_schema_clarification_skips_semantic_lookup_when_exact_element_exists(monkeypatch):
+    from backend.ai.intent import clarification
+
+    monkeypatch.setattr(
+        clarification,
+        "find_question_element_matches",
+        lambda _question: [("SLIM-HK", "Company", "SLIM-HK")],
+    )
+
+    def fail_search(*_args, **_kwargs):
+        raise AssertionError("semantic lookup should not run when exact elements exist")
+
+    monkeypatch.setattr(clarification, "search_by_embedding", fail_search)
+
+    message = clarification.find_schema_clarification(
+        "show me the P&L for SLIM HK",
+        [{"cube": "P&L", "dimensions": ["Region", "Company", "Account"]}],
+        [],
+    )
+
+    assert message is None
+
+
 def test_no_usable_data_message_is_user_friendly():
     message, detail = no_usable_data_message([
         {"cube": "Consol GL Company Entry", "status": "no data"},
@@ -646,6 +699,18 @@ def test_profile_dim_roles_map_uses_content_based_roles():
 
     assert roles["S Consol GL Company"] == "currency_view"
     assert roles["Reporting Currency"] == "currency_code"
+
+
+def test_profile_role_merge_keeps_content_detected_currency_roles():
+    from backend.services.model_profile import merge_dim_roles
+
+    merged = merge_dim_roles(
+        {"S Consol GL Group": "currency_view", "Scenario": "scenario"},
+        {"S Consol GL Group": "data_source", "Scenario": "scenario"},
+    )
+
+    assert merged["S Consol GL Group"] == "currency_view"
+    assert merged["Scenario"] == "scenario"
 
 
 

@@ -10,11 +10,13 @@ from collections.abc import Iterator
 from ...config import get_llm_provider
 from .anthropic_provider import AnthropicProvider
 from .base import LLMProvider
+from .deepseek_provider import DeepSeekProvider
 from .openai_provider import OpenAIProvider, openai_client
 
 _PROVIDERS: dict[str, LLMProvider] = {
     "openai": OpenAIProvider(),
     "anthropic": AnthropicProvider(),
+    "deepseek": DeepSeekProvider(),
 }
 
 

@@ -11,18 +11,23 @@ except ImportError:  # pragma: no cover
     _anthropic_sdk = None  # type: ignore[assignment]
 
 
-def _client():
-    if _anthropic_sdk is None:
-        raise RuntimeError("anthropic package is not installed")
-    api_key = get_llm_api_key()
-    if not api_key:
-        raise RuntimeError("LLM_API_KEY environment variable not set")
-    return _anthropic_sdk.Anthropic(api_key=api_key)
-
-
 class AnthropicProvider:
+    def __init__(self, base_url: str | None = None) -> None:
+        self._base_url = base_url
+
+    def _client(self):
+        if _anthropic_sdk is None:
+            raise RuntimeError("anthropic package is not installed")
+        api_key = get_llm_api_key()
+        if not api_key:
+            raise RuntimeError("LLM_API_KEY environment variable not set")
+        kwargs: dict = {"api_key": api_key}
+        if self._base_url:
+            kwargs["base_url"] = self._base_url
+        return _anthropic_sdk.Anthropic(**kwargs)
+
     def complete(self, prompt: str, *, max_tokens: int, temperature: float) -> str:
-        response = _client().messages.create(
+        response = self._client().messages.create(
             model=get_llm_model(),
             max_tokens=max_tokens,
             temperature=temperature,
@@ -31,7 +36,7 @@ class AnthropicProvider:
         return "".join(b.text for b in response.content if b.type == "text").strip()
 
     def stream(self, prompt: str, *, max_tokens: int, temperature: float) -> Iterator[str]:
-        with _client().messages.stream(
+        with self._client().messages.stream(
             model=get_llm_model(),
             max_tokens=max_tokens,
             temperature=temperature,
@@ -56,7 +61,7 @@ class AnthropicProvider:
             }
             for t in tools
         ]
-        response = _client().messages.create(
+        response = self._client().messages.create(
             model=get_llm_model(),
             messages=anthropic_messages,
             tools=anthropic_tools,
@@ -96,13 +101,17 @@ def _to_anthropic_messages(messages: list[dict]) -> list[dict]:
             else:
                 out.append({"role": "user", "content": [tool_result]})
         elif role == "assistant" and "tool_calls" in m:
-            out.append({
-                "role": "assistant",
-                "content": [
-                    {"type": "tool_use", "id": tc["id"], "name": tc["name"], "input": tc["args"]}
-                    for tc in m["tool_calls"]
-                ],
-            })
+            if "_raw_content" in m:
+                # Preserve original content blocks (e.g. DeepSeek thinking blocks).
+                out.append({"role": "assistant", "content": m["_raw_content"]})
+            else:
+                out.append({
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": tc["id"], "name": tc["name"], "input": tc["args"]}
+                        for tc in m["tool_calls"]
+                    ],
+                })
         else:
             out.append({"role": role, "content": m.get("content", "")})
     return out

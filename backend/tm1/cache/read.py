@@ -1,6 +1,6 @@
 """Public read helpers backed by the SQLite schema cache."""
 
-from .db import connect, qmarks
+from .db import cache_scope_matches, connect, qmarks
 from .defaults import looks_like_pnl_bottom_line, pick_default_element
 
 
@@ -9,6 +9,8 @@ from .defaults import looks_like_pnl_bottom_line, pick_default_element
 def lookup_element_dim(element_name: str, candidate_dims: list[str] | None = None) -> str | None:
     """Return the dimension that owns element_name, or None."""
     conn = connect()
+    if not cache_scope_matches(conn):
+        return None
     if candidate_dims:
         row = conn.execute(
             f"SELECT dim_name FROM elements"
@@ -27,7 +29,10 @@ def lookup_element_dim(element_name: str, candidate_dims: list[str] | None = Non
 
 
 def element_exists(dim_name: str, element_name: str) -> bool:
-    row = connect().execute(
+    conn = connect()
+    if not cache_scope_matches(conn):
+        return False
+    row = conn.execute(
         "SELECT 1 FROM elements"
         " WHERE dim_name = ? AND LOWER(element_name) = LOWER(?)"
         " LIMIT 1",
@@ -37,7 +42,10 @@ def element_exists(dim_name: str, element_name: str) -> bool:
 
 
 def is_consolidated_element(dim_name: str, element_name: str) -> bool:
-    row = connect().execute(
+    conn = connect()
+    if not cache_scope_matches(conn):
+        return False
+    row = conn.execute(
         "SELECT 1 FROM elements"
         " WHERE dim_name = ? AND LOWER(element_name) = LOWER(?)"
         "   AND element_type = 'Consolidated'"
@@ -55,6 +63,8 @@ def get_cube_schema_cached(cube_name: str) -> dict | None:
     Element list is capped at 60 per dimension to keep AI prompts manageable.
     """
     conn = connect()
+    if not cache_scope_matches(conn):
+        return None
     cube_row = conn.execute(
         "SELECT measure_dim FROM cubes WHERE name = ?", (cube_name,)
     ).fetchone()
@@ -173,12 +183,18 @@ def get_cube_schema_cached(cube_name: str) -> dict | None:
 
 def get_cubes_cached() -> list[dict]:
     """All non-system cubes with their descriptions."""
-    rows = connect().execute("SELECT name, description FROM cubes").fetchall()
+    conn = connect()
+    if not cache_scope_matches(conn):
+        return []
+    rows = conn.execute("SELECT name, description FROM cubes").fetchall()
     return [{"cube": r[0], "description": r[1] or r[0]} for r in rows]
 
 
 def get_last_synced_at() -> str | None:
-    row = connect().execute("SELECT MAX(synced_at) FROM cubes").fetchone()
+    conn = connect()
+    if not cache_scope_matches(conn):
+        return None
+    row = conn.execute("SELECT MAX(synced_at) FROM cubes").fetchone()
     return row[0] if row and row[0] else None
 
 
@@ -188,7 +204,10 @@ def get_alias_maps(dim_names: list[str]) -> dict[str, dict[str, str]]:
     """{dim_name: {element_name: alias_value}}"""
     if not dim_names:
         return {}
-    rows = connect().execute(
+    conn = connect()
+    if not cache_scope_matches(conn):
+        return {}
+    rows = conn.execute(
         f"SELECT dim_name, element_name, alias_value FROM element_aliases"
         f" WHERE dim_name IN ({qmarks(len(dim_names))})",
         dim_names,
@@ -203,7 +222,10 @@ def get_alias_attribute_names(dim_names: list[str]) -> dict[str, str]:
     """{dim_name: attr_name} for the first Alias-type attribute in each dim."""
     if not dim_names:
         return {}
-    rows = connect().execute(
+    conn = connect()
+    if not cache_scope_matches(conn):
+        return {}
+    rows = conn.execute(
         f"SELECT dim_name, MIN(attribute_name) FROM dim_attributes"
         f" WHERE dim_name IN ({qmarks(len(dim_names))}) AND attribute_type = 'Alias'"
         f" GROUP BY dim_name",
@@ -214,7 +236,10 @@ def get_alias_attribute_names(dim_names: list[str]) -> dict[str, str]:
 
 def get_named_attribute_map(dim_name: str, attr_name: str) -> dict[str, str]:
     """{element_name: attr_value} for one specific attribute (case-insensitive)."""
-    rows = connect().execute(
+    conn = connect()
+    if not cache_scope_matches(conn):
+        return {}
+    rows = conn.execute(
         "SELECT element_name, attr_value FROM element_attribute_values"
         " WHERE dim_name = ? AND LOWER(attr_name) = LOWER(?)",
         (dim_name, attr_name),
@@ -228,6 +253,8 @@ def get_dim_metadata(dim_names: list[str]) -> dict[str, dict]:
         return {}
 
     conn = connect()
+    if not cache_scope_matches(conn):
+        return {}
     time_rows = conn.execute(
         f"SELECT DISTINCT dim_name, MAX(is_time_dim)"
         f" FROM dim_in_cube WHERE dim_name IN ({qmarks(len(dim_names))})"
@@ -259,7 +286,10 @@ def get_dim_metadata(dim_names: list[str]) -> dict[str, dict]:
 def get_dim_hierarchy_edges(dim_names: list[str]) -> dict[str, list[tuple[str, str]]]:
     if not dim_names:
         return {}
-    rows = connect().execute(
+    conn = connect()
+    if not cache_scope_matches(conn):
+        return {}
+    rows = conn.execute(
         f"SELECT dim_name, parent_name, child_name FROM element_edges"
         f" WHERE dim_name IN ({qmarks(len(dim_names))})",
         dim_names,

@@ -156,6 +156,44 @@ def schema_summary_for_profile() -> dict:
     }
 
 
+def schema_summary_for_dim_roles(cubes: list[dict] | None = None) -> dict:
+    """Build role-classification input from full cached schemas.
+
+    The compact cube summaries used for cube selection intentionally omit most
+    element attributes. Role detection needs those attributes for dimensions
+    like S Consol GL Group, where EC/PCT aliases reveal currency-view semantics.
+    """
+    cubes = cubes or get_cubes_with_descriptions()
+    role_cubes: list[dict] = []
+    for cube in cubes:
+        cube_name = str(cube.get("cube", "")).strip()
+        if not cube_name:
+            continue
+        try:
+            schema = get_cube_schema(cube_name)
+        except Exception:
+            continue
+        role_cubes.append({
+            "cube": cube_name,
+            "dimensions": schema.get("dimensions", []),
+        })
+    return {"cubes": role_cubes}
+
+
+def merge_dim_roles(auto_roles: dict, existing_roles: dict) -> dict:
+    """Merge generated roles with profile overrides.
+
+    Existing hand-tuned values usually win, but content-detected currency roles
+    are facts from element attributes, not naming heuristics. Let them replace
+    old data_source/currency labels created before content detection existed.
+    """
+    merged = {**auto_roles, **existing_roles}
+    for name, role in auto_roles.items():
+        if role in {"currency_view", "currency_code"}:
+            merged[name] = role
+    return merged
+
+
 def fallback_semantic_profile(schema_summary: dict, error_message: str) -> dict:
     cubes = list(schema_summary.get("cubes") or [])
     return {
@@ -204,9 +242,9 @@ def generate_current_model_profile_response() -> dict:
             **get_current_period_defaults(),
             **existing_filters,
         }
-        auto_roles = build_dim_roles_map(schema_summary)
+        auto_roles = build_dim_roles_map(schema_summary_for_dim_roles())
         existing_roles = dict(existing_profile.get("dim_roles") or {})
-        profile["dim_roles"] = {**auto_roles, **existing_roles}
+        profile["dim_roles"] = merge_dim_roles(auto_roles, existing_roles)
         guidance = list(profile.get("selection_guidance") or [])
         guidance.append(
             "For financial statement questions, use finance_semantics to choose "

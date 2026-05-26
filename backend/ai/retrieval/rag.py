@@ -70,8 +70,11 @@ def save_query(
     mdx: str,
     row_count: int = 0,
     grounded_members: list | None = None,
-) -> None:
-    """Persist a structural template of a successful query for future few-shot use."""
+) -> int:
+    """Persist a structural template of a query for future few-shot use.
+
+    Returns the inserted rowid so the caller can show / delete the entry later.
+    """
     template = _to_structural_template(mdx)
     grounded_json = json.dumps(grounded_members or [], ensure_ascii=False)
     with _connect() as conn:
@@ -84,6 +87,39 @@ def save_query(
             "INSERT INTO query_meta(rowid, cube, row_count, grounded_json) VALUES (?, ?, ?, ?)",
             (rowid, cube, row_count, grounded_json),
         )
+    return int(rowid)
+
+
+def delete_query(cube: str, mdx: str) -> int:
+    """Delete all query_history entries whose (cube, structural-template-of-mdx)
+    match. The structural template strips concrete element values, so this
+    removes "memory" of using this MDX shape against the cube — future similar
+    questions will no longer retrieve it. Returns number of rows removed.
+    """
+    template = _to_structural_template(mdx)
+    with _connect() as conn:
+        cursor = conn.execute(
+            "SELECT rowid FROM query_history WHERE cube = ? AND mdx = ?",
+            (cube, template),
+        )
+        rowids = [r[0] for r in cursor.fetchall()]
+        if not rowids:
+            return 0
+        placeholders = ",".join("?" * len(rowids))
+        conn.execute(f"DELETE FROM query_history WHERE rowid IN ({placeholders})", rowids)
+        conn.execute(f"DELETE FROM query_meta    WHERE rowid IN ({placeholders})", rowids)
+    return len(rowids)
+
+
+def delete_query_by_rowid(rowid: int) -> bool:
+    """Delete a single RAG entry by its rowid. Returns True if removed."""
+    with _connect() as conn:
+        cursor = conn.execute("SELECT 1 FROM query_history WHERE rowid = ?", (rowid,))
+        if not cursor.fetchone():
+            return False
+        conn.execute("DELETE FROM query_history WHERE rowid = ?", (rowid,))
+        conn.execute("DELETE FROM query_meta    WHERE rowid = ?", (rowid,))
+    return True
 
 
 # ---------------------------------------------------------------------------

@@ -14,6 +14,7 @@ import logging
 from ..retrieval.embeddings import search_by_embedding
 from ...tm1.cache import find_question_element_matches
 from ...tm1.cache.db import connect
+from ...tm1.service import get_cube_view_mdx, list_cube_views
 from .registry import ToolRegistry, ToolSpec
 
 _log = logging.getLogger(__name__)
@@ -25,11 +26,13 @@ def _handle_search_elements(args: dict, cube_schema: dict) -> str:
     dim = args.get("dimension", "")
     term = args.get("term", "")
 
+    # Both finders return list[tuple[matched_phrase, dim_name, element_name]].
+
     # FTS first — local SQLite, no API call.
     fts_matches = find_question_element_matches(term)
     if dim:
-        fts_matches = [m for m in fts_matches if m.get("dimension") == dim]
-    results = [m.get("element") for m in fts_matches[:10] if m.get("element")]
+        fts_matches = [m for m in fts_matches if m[1] == dim]
+    results = [m[2] for m in fts_matches[:10] if m[2]]
     if results:
         return json.dumps({"dimension": dim, "matches": results, "matched_by": "fts"})
 
@@ -38,7 +41,7 @@ def _handle_search_elements(args: dict, cube_schema: dict) -> str:
     try:
         candidate_dims = [dim] if dim else None
         emb_matches = search_by_embedding(term, candidate_dims=candidate_dims)
-        results = [m.get("element") for m in emb_matches[:10] if m.get("element")]
+        results = [m[2] for m in emb_matches[:10] if m[2]]
         if results:
             return json.dumps({"dimension": dim, "matches": results, "matched_by": "embedding"})
     except Exception as exc:
@@ -97,6 +100,24 @@ def _handle_get_cube_summary(args: dict, cube_schema: dict) -> str:
         "dimensions": dims,
         "measure_dimensions": measures,
     })
+
+
+def _handle_list_views_from_cube(args: dict, cube_schema: dict) -> str:
+    cube_name = str(args.get("cube", "") or cube_schema.get("cube", "")).strip()
+    if not cube_name:
+        return json.dumps({"error": "cube name required"})
+    views = list_cube_views(cube_name)
+    return json.dumps({"cube": cube_name, "views": views[:80], "count": len(views)})
+
+
+def _handle_get_mdx_from_view(args: dict, cube_schema: dict) -> str:
+    cube_name = str(args.get("cube", "") or cube_schema.get("cube", "")).strip()
+    view_name = str(args.get("view", "")).strip()
+    private = bool(args.get("private", False))
+    if not cube_name or not view_name:
+        return json.dumps({"error": "cube and view are required"})
+    mdx = get_cube_view_mdx(cube_name, view_name, private=private)
+    return json.dumps({"cube": cube_name, "view": view_name, "private": private, "mdx": mdx})
 
 
 def _handle_get_element_attributes(args: dict, cube_schema: dict) -> str:
@@ -285,6 +306,54 @@ ELEMENT_REGISTRY.register(ToolSpec(
         "required": [],
     },
     handler=_handle_get_cube_summary,
+))
+
+ELEMENT_REGISTRY.register(ToolSpec(
+    name="list_views_from_cube",
+    description=(
+        "List public/private TM1 cube views for the current cube. For financial "
+        "statement requests such as P&L, balance sheet, or cash flow, call this "
+        "early to find a trusted existing view before writing MDX from scratch."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "cube": {
+                "type": "string",
+                "description": "TM1 cube name (omit to use the current cube).",
+            },
+        },
+        "required": [],
+    },
+    handler=_handle_list_views_from_cube,
+))
+
+ELEMENT_REGISTRY.register(ToolSpec(
+    name="get_mdx_from_view",
+    description=(
+        "Get the MDX definition from a named TM1 cube view. Use this after "
+        "list_views_from_cube finds a relevant statement/reporting view; adapt "
+        "only the requested filters instead of inventing a new row structure."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "cube": {
+                "type": "string",
+                "description": "TM1 cube name (omit to use the current cube).",
+            },
+            "view": {
+                "type": "string",
+                "description": "TM1 view name.",
+            },
+            "private": {
+                "type": "boolean",
+                "description": "Whether the view is private.",
+            },
+        },
+        "required": ["view"],
+    },
+    handler=_handle_get_mdx_from_view,
 ))
 
 ELEMENT_REGISTRY.register(ToolSpec(

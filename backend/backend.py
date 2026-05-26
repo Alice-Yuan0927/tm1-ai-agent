@@ -23,6 +23,7 @@ from .routes import email as email_routes
 from .routes import explain_cell as explain_cell_routes
 from .routes import export as export_routes
 from .routes import health as health_routes
+from .routes import rag_feedback as rag_feedback_routes
 from .routes import schema as schema_routes
 
 _log = logging.getLogger(__name__)
@@ -57,4 +58,5 @@ app.include_router(analyze_routes.router)
 app.include_router(explain_cell_routes.router)
 app.include_router(export_routes.router)
 app.include_router(email_routes.router)
+app.include_router(rag_feedback_routes.router)
 app.include_router(assets_routes.router)

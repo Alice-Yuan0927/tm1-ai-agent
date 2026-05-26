@@ -14,6 +14,18 @@ _LAYOUT_FOLLOWUP_HINT_RE = re.compile(
     re.IGNORECASE,
 )
 
+_CORRECTION_FOLLOWUP_RE = re.compile(
+    r"\b(i\s+mean|should\s+be|instead|use\s+.+\s+(?:for|as|instead)|"
+    r"set\s+.+\s+to|change\s+.+\s+to|filter\s+.+\s+to)\b",
+    re.IGNORECASE,
+)
+
+_QUERY_STATE_DELTA_HINT_RE = re.compile(
+    r"\b(measure|measures|metric|metrics|amount|value|display|show\s+me\s+the\s+measure|"
+    r"show\s+the\s+measure|as\s+amount|in\s+amount)\b",
+    re.IGNORECASE,
+)
+
 
 def _previous_axis_context(history: list[dict] | None) -> dict[str, object]:
     if not history:
@@ -33,8 +45,70 @@ def _previous_axis_context(history: list[dict] | None) -> dict[str, object]:
                     "column_dimensions": preview.get("column_dimensions") or [],
                     "filters": preview.get("filters") or [],
                     "columns": preview.get("columns") or [],
+                    "measure_dimension": preview.get("measure_dimension") or "",
                 }
     return {}
+
+
+def _shape(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value).lower())
+
+
+def _state_dimensions(previous_axis: dict[str, object]) -> list[str]:
+    dims: list[str] = []
+    dims.extend(str(d) for d in previous_axis.get("row_dimensions") or [])
+    dims.extend(str(d) for d in previous_axis.get("column_dimensions") or [])
+    if previous_axis.get("measure_dimension"):
+        dims.append(str(previous_axis.get("measure_dimension")))
+    filters = previous_axis.get("filters") or []
+    if isinstance(filters, list):
+        dims.extend(
+            str(item.get("dimension", ""))
+            for item in filters
+            if isinstance(item, dict)
+        )
+    return list(dict.fromkeys(d for d in dims if d))
+
+
+def _mentions_previous_state_dimension(question: str, previous_axis: dict[str, object]) -> bool:
+    question_shape = _shape(question)
+    if not question_shape:
+        return False
+    for dim in _state_dimensions(previous_axis):
+        dim_shape = _shape(dim)
+        if dim_shape and dim_shape in question_shape:
+            return True
+    return False
+
+
+def _baseline_state_directive(previous_axis: dict[str, object]) -> str:
+    previous_rows = ", ".join(str(d) for d in previous_axis.get("row_dimensions") or []) or "the previous rows"
+    previous_columns = ", ".join(str(d) for d in previous_axis.get("column_dimensions") or []) or "the previous columns"
+    measure_dimension = str(previous_axis.get("measure_dimension") or "").strip()
+    visible_columns = ", ".join(str(c) for c in previous_axis.get("columns") or [])
+    filters = previous_axis.get("filters") or []
+    filter_text = ""
+    if isinstance(filters, list) and filters:
+        filter_text = " Previous filters: " + ", ".join(
+            f"{item.get('dimension')}={item.get('element')}"
+            for item in filters[:16]
+            if isinstance(item, dict)
+        ) + "."
+    previous_mdx = str(previous_axis.get("generated_mdx") or "").strip()
+    mdx_text = f" Previous MDX for exact baseline reference: {previous_mdx}" if previous_mdx else ""
+    measure_text = ""
+    if measure_dimension or visible_columns:
+        measure_text = (
+            f" Previous measure dimension: {measure_dimension or 'unknown'}."
+            f" Previous visible measure/column elements: {visible_columns or 'none'}."
+        )
+    return (
+        "Follow-up query-state instruction: treat the current user message as a "
+        "delta to the previous query state, not as a brand-new query. Preserve "
+        f"previous ROWS axis ({previous_rows}), previous COLUMNS axis "
+        f"({previous_columns}), and previous filters unless the current message "
+        f"explicitly changes one of them.{filter_text}{measure_text}{mdx_text}"
+    )
 
 
 def _looks_like_layout_followup(question: str) -> bool:
@@ -155,9 +229,20 @@ def effective_question_from_history(question: str, history: list[dict] | None) -
     if axis_directive:
         previous = str((history[-1] or {}).get("question", "")).strip()
         return " ".join(part for part in (previous, text, axis_directive) if part)
+    previous_axis = _previous_axis_context(history)
+    state_followup = bool(previous_axis) and (
+        bool(_CORRECTION_FOLLOWUP_RE.search(text))
+        or bool(_QUERY_STATE_DELTA_HINT_RE.search(text))
+        or _mentions_previous_state_dimension(text, previous_axis)
+    )
+    if state_followup:
+        previous = str((history[-1] or {}).get("question", "")).strip()
+        directive = _baseline_state_directive(previous_axis)
+        return " ".join(part for part in (previous, text, directive) if part)
     token_count = len(re.findall(r"[A-Za-z0-9]+", text))
     followup = (
         token_count <= 5
+        or bool(_CORRECTION_FOLLOWUP_RE.search(text))
         or any(term in lowered for term in (
             "same", "this", "that", "those", "it",
             "show by", "by month", "by quarter",

@@ -10,6 +10,7 @@ from ...util.llm_json import parse_llm_json
 from ..output.conversation import conversation_context
 from ..prompts.prompt_rules import GENERAL_AGENT_CONTRACT
 from ..providers import complete_text
+from ..retrieval.embeddings import search_by_embedding
 from ..schema.tm1_lexicon import SCENARIO_ALIASES, TIME_PERIOD_PATTERN
 
 _log = logging.getLogger(__name__)
@@ -128,7 +129,7 @@ Reply with ONLY the markdown message, no JSON, no extra text."""
 
     try:
         message = complete_text(prompt, max_tokens=240, temperature=0.3).strip()
-        if message.upper().startswith("NONE"):
+        if not message or message.upper().startswith("NONE"):
             return _fallback_clarification(missing)
         return message
     except Exception:
@@ -159,6 +160,11 @@ def find_schema_clarification(
         sample = ", ".join(f"{m[0]} -> {m[1]}.{m[2]}" for m in matches[:5])
         _log.info("[clarify-skip] question references real elements: %s", sample)
         return None
+
+    semantic = _semantic_member_clarification(question, cubes)
+    if semantic:
+        return semantic
+
     cube_context = json.dumps(cubes[:12], indent=2, ensure_ascii=False)
     profile_section = (
         f"\nSemantic model profile:\n{json.dumps(model_profile, indent=2, ensure_ascii=False)}\n"
@@ -203,3 +209,68 @@ or
     except Exception as exc:
         _log.debug("schema clarification check failed: %s", exc)
     return None
+
+
+def _semantic_member_clarification(question: str, cubes: list[dict]) -> str | None:
+    """Clarify when user wording is close to TM1 elements but not an exact match."""
+    candidate_dims = _candidate_dims_from_cube_context(cubes)
+    try:
+        hits = search_by_embedding(
+            question,
+            candidate_dims=candidate_dims or None,
+            top_k=4,
+            threshold=0.68,
+        )
+    except Exception as exc:
+        _log.debug("semantic member clarification lookup failed: %s", exc)
+        return None
+
+    options = _dedupe_semantic_hits(hits)
+    if not options:
+        return None
+
+    option_text = ", ".join(
+        f"**{dim}.{element}**"
+        + (f' (matched "{phrase}")' if phrase else "")
+        for phrase, dim, element in options[:5]
+    )
+    return (
+        "I could not find an exact TM1 element for part of your request. "
+        f"The closest element candidates I found are: {option_text}. "
+        "Which one should I use before I run the query?"
+    )
+
+
+def _candidate_dims_from_cube_context(cubes: list[dict]) -> list[str]:
+    dims: list[str] = []
+    seen: set[str] = set()
+    for cube in (cubes or [])[:12]:
+        for dim in cube.get("dimensions") or []:
+            if isinstance(dim, str):
+                name = dim
+            elif isinstance(dim, dict):
+                name = str(dim.get("name") or "")
+            else:
+                name = ""
+            name = name.strip()
+            key = name.lower()
+            if name and key not in seen:
+                dims.append(name)
+                seen.add(key)
+    return dims
+
+
+def _dedupe_semantic_hits(hits: list[tuple[str, str, str]]) -> list[tuple[str, str, str]]:
+    options: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for phrase, dim_name, element_name in hits or []:
+        dim = str(dim_name or "").strip()
+        element = str(element_name or "").strip()
+        if not dim or not element:
+            continue
+        key = (dim.lower(), element.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        options.append((str(phrase or "").strip(), dim, element))
+    return options

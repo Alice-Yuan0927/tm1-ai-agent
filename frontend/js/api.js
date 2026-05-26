@@ -123,7 +123,28 @@ async function go(overrideOptions = {}) {
         let event;
         try { event = JSON.parse(part.slice(6)); } catch { continue; }
 
-        if (event.type === "sources") {
+        if (event.type === "agent_step") {
+          const live = document.getElementById("agent-live-status");
+          const history = document.getElementById("agent-tool-history");
+          const argsSuffix = event.args_summary ? ` (${event.args_summary})` : "";
+          if (live) {
+            const txt = live.querySelector("[data-live-text]");
+            if (event.phase === "start") {
+              live.classList.remove("hidden");
+              if (txt) txt.textContent = `Calling ${event.tool}${argsSuffix}…`;
+            } else if (event.phase === "end") {
+              if (txt) txt.textContent = "";
+              live.classList.add("hidden");
+            }
+          }
+          if (history && event.phase === "end") {
+            const summary = event.result_summary ? ` — ${event.result_summary}` : "";
+            const li = document.createElement("li");
+            li.textContent = `${event.tool}${argsSuffix}${summary}`;
+            history.appendChild(li);
+          }
+
+        } else if (event.type === "sources") {
           window.clearInterval(thinkingTimer);
           output.querySelector('[data-thinking-state="true"]')?.remove();
           output.insertAdjacentHTML("beforeend", streamingArticle(event, question));

@@ -8,7 +8,7 @@ import json
 import logging
 from typing import Any
 
-from ..tm1.cache.db import connect
+from ..tm1.cache.db import cache_scope_matches, connect
 
 _log = logging.getLogger(__name__)
 
@@ -16,6 +16,8 @@ _log = logging.getLogger(__name__)
 def save_cube_summary(cube_name: str, summary: dict) -> None:
     """Upsert a cube summary. All list/dict fields are stored as JSON strings."""
     conn = connect()
+    if not cache_scope_matches(conn):
+        return
     conn.execute(
         """
         INSERT INTO cube_summaries
@@ -48,7 +50,10 @@ def save_cube_summary(cube_name: str, summary: dict) -> None:
 
 def load_cube_summary(cube_name: str) -> dict | None:
     """Return the stored summary for one cube, or None if not found."""
-    row = connect().execute(
+    conn = connect()
+    if not cache_scope_matches(conn):
+        return None
+    row = conn.execute(
         "SELECT * FROM cube_summaries WHERE cube_name = ?", (cube_name,)
     ).fetchone()
     if row is None:
@@ -58,12 +63,17 @@ def load_cube_summary(cube_name: str) -> dict | None:
 
 def load_all_summaries() -> dict[str, dict]:
     """Return {cube_name: summary} for every stored cube."""
-    rows = connect().execute("SELECT * FROM cube_summaries").fetchall()
+    conn = connect()
+    if not cache_scope_matches(conn):
+        return {}
+    rows = conn.execute("SELECT * FROM cube_summaries").fetchall()
     return {row["cube_name"]: _deserialise(row) for row in rows}
 
 
 def delete_cube_summary(cube_name: str) -> None:
     conn = connect()
+    if not cache_scope_matches(conn):
+        return
     conn.execute("DELETE FROM cube_summaries WHERE cube_name = ?", (cube_name,))
     conn.commit()
 

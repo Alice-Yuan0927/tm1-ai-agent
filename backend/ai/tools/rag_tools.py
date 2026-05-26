@@ -6,8 +6,11 @@ from ai.retrieval.rag directly.
 
 from __future__ import annotations
 
-from ..retrieval.rag import retrieve_similar as _retrieve_similar
-from ..retrieval.rag import save_query as _save_query
+from ..retrieval.rag import (
+    delete_query as _delete_query,
+    retrieve_similar as _retrieve_similar,
+    save_query as _save_query,
+)
 
 
 def get_similar_queries(question: str, cube: str) -> list[dict]:
@@ -21,10 +24,15 @@ def record_query(
     mdx: str,
     row_count: int,
     grounded_members: list | None = None,
-) -> None:
-    """Persist a successful query to the RAG store for future few-shot retrieval."""
-    _save_query(
+) -> int:
+    """Persist a query to the RAG store. Returns the new rowid."""
+    return _save_query(
         question, cube, mdx,
         row_count=row_count,
         grounded_members=grounded_members or [],
     )
+
+
+def forget_query(cube: str, mdx: str) -> int:
+    """Remove all RAG entries matching this cube+mdx-template. Returns count removed."""
+    return _delete_query(cube, mdx)

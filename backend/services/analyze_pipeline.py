@@ -8,63 +8,33 @@ top-to-bottom.
 
 import json as _json
 import logging
+import re
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any
 
 from anyio import from_thread
 from fastapi import Request
 
-from ..ai.intent.attribute_intent import detect_attribute_intent
-from ..ai.intent.clarification import find_clarifications, find_schema_clarification
-from ..ai.intent.cube_selection import select_cubes_with_profile
+from ..ai.agent import run_agent
+from ..ai.intent.clarification import find_clarifications
 from ..ai.intent.layout_followup import effective_question_from_history
 from ..ai.intent.preflight import is_unclear_question
-from ..ai.mdx.agent import run_mdx_agent
-from ..ai.mdx.context import MdxContext
 from ..ai.output.narrative import (
     parse_suggestions as _parse_suggestions,
     stream_financial_analysis,
 )
-from ..ai.tools.element_search import resolve_members
 from ..ai.tools.preview import build_cube_preview
-from ..ai.tools.rag_tools import get_similar_queries, record_query
 from ..config import (
     AI_MAX_COLUMNS,
     AI_MAX_ROWS,
-    CUBE_SELECT_LIMIT_AUTO,
-    CUBE_SELECT_LIMIT_MANUAL,
     PREVIEW_ROW_LIMIT,
 )
 from ..response_messages import no_usable_data_message
 from ..schemas import QuestionRequest
-from ..tm1.service import (
-    get_cube_schema,
-    get_cubes_with_descriptions,
-)
-from .model_profile import cube_context_for_selection, load_current_model_profile
+from .model_profile import load_current_model_profile
 
 _log = logging.getLogger(__name__)
-
-
-# ── Request-scoped schema cache ──────────────────────────────────────────────
-
-class _RequestSchemaCache:
-    """Memoize get_cube_schema() for the duration of one request.
-
-    cube_context_for_selection() and the per-cube loop both call get_cube_schema
-    for every selected cube; for 30-cube models that's 60+ duplicate SQLite
-    multi-table reads per /api/analyze. This cache dedupes them.
-    """
-
-    def __init__(self) -> None:
-        self._cache: dict[str, dict] = {}
-
-    def get(self, cube: str) -> dict:
-        if cube not in self._cache:
-            self._cache[cube] = get_cube_schema(cube)
-        return self._cache[cube]
 
 
 # ── Result dataclass ──────────────────────────────────────────────────────────
@@ -95,17 +65,6 @@ class _CubeResult:
             "plan": None,
             "_full_preview": self.full_preview,
         }
-
-
-# ── Small helpers ────────────────────────────────────────────────────────────
-
-@dataclass
-class _CubeSelectionOutcome:
-    selected_cubes: list[dict]
-    reasoning: str = ""
-    user_scoped: bool = False
-    error: str | None = None
-    clarification: str | None = None
 
 
 def _source_for_ai(s: dict) -> dict:
@@ -158,152 +117,12 @@ def _early_clarification(question: str, history: list[dict], model_profile: dict
     return find_clarifications(question, history, model_profile)
 
 
-def _forced_attribute_intent(
-    question: str, history: list[dict], cache: _RequestSchemaCache
-) -> dict[str, str]:
-    """Detect when a follow-up wants an attribute display from the previous cube."""
-    if not history:
-        return {}
-    prev_cube = str(history[-1].get("chosen_cube", "")).strip()
-    if not prev_cube:
-        return {}
-    try:
-        prev_schema = cache.get(prev_cube)
-        dim_attrs: dict[str, list[str]] = {
-            d["name"]: [
-                a["name"] for a in d.get("attributes", [])
-                if a.get("type") in ("Alias", "String")
-            ]
-            for d in prev_schema.get("dimensions", [])
-            if not d.get("is_measure") and d.get("attributes")
-        }
-        if dim_attrs:
-            intent = detect_attribute_intent(question, history, dim_attrs)
-            if intent:
-                return {intent["dim_name"]: intent["attr_name"]}
-    except Exception as exc:
-        _log.debug("forced attribute intent detection failed: %s", exc)
-    return {}
 
 
-# ── Stage 2: cube selection ──────────────────────────────────────────────────
-
-def _select_cubes_stage(
-    question: str,
-    req: QuestionRequest,
-    model_profile: dict | None,
-) -> _CubeSelectionOutcome:
-    """Select candidate cubes, or return a typed clarification/error outcome."""
-    try:
-        cubes = get_cubes_with_descriptions()
-    except RuntimeError as exc:
-        return _CubeSelectionOutcome([], error=str(exc))
-
-    user_scoped = bool(req.selected_cubes)
-    if user_scoped:
-        wanted = {c.strip().lower() for c in req.selected_cubes if c.strip()}
-        manual_cubes = [c for c in cubes if str(c.get("cube", "")).lower() in wanted]
-        if not manual_cubes:
-            return _CubeSelectionOutcome(
-                [],
-                user_scoped=True,
-                error="Selected cubes are no longer available in the connected TM1 model.",
-            )
-        selected_cubes = [
-            {"cube": c["cube"], "reasoning": "User-selected scope"}
-            for c in manual_cubes
-        ]
-        reasoning = f"User restricted scope to {len(selected_cubes)} cube(s)"
-        return _CubeSelectionOutcome(selected_cubes, reasoning=reasoning, user_scoped=True)
-
-    cube_context = cube_context_for_selection(cubes, model_profile=model_profile)
-    schema_clarification = find_schema_clarification(
-        question, cube_context, req.history, model_profile=model_profile,
-    )
-    if schema_clarification:
-        return _CubeSelectionOutcome([], clarification=schema_clarification)
-
-    try:
-        selection = select_cubes_with_profile(
-            question, cube_context, req.history, model_profile=model_profile,
-        )
-    except RuntimeError as exc:
-        return _CubeSelectionOutcome([], error=str(exc))
-
-    selected_cubes = selection.get("cubes") or []
-    reasoning = selection.get("reasoning", "")
-    if not selected_cubes:
-        return _CubeSelectionOutcome([], error="AI did not return a valid cube selection")
-    return _CubeSelectionOutcome(selected_cubes, reasoning=reasoning)
+# ── Stage 2: agentic loop ────────────────────────────────────────────────────
+# (cube selection + MDX generation now handled by run_agent in ai/agent/loop.py)
 
 
-# ── Stage 3: process one cube ────────────────────────────────────────────────
-
-def _process_cube(
-    selected: dict,
-    effective_question: str,
-    req: QuestionRequest,
-    model_profile: dict | None,
-    forced_apply_attributes: dict[str, str],
-    schema_cache: _RequestSchemaCache,
-) -> _CubeResult | dict:
-    """Return _CubeResult on success or a skipped-source dict on failure."""
-    cube = str(selected.get("cube", "")).strip()
-    source_reasoning = str(selected.get("reasoning", "")).strip()
-
-    try:
-        schema = schema_cache.get(cube)
-    except RuntimeError as exc:
-        return {"cube": cube, "reasoning": source_reasoning, "status": f"schema error: {exc}"}
-
-    similar = get_similar_queries(effective_question, cube)
-    cube_dims = [
-        str(d.get("name", "")) for d in schema.get("dimensions", []) if d.get("name")
-    ]
-    grounded_members = resolve_members(effective_question, cube_dims)
-    if grounded_members:
-        _log.info("[member-grounding] %s candidates=%d", cube, len(grounded_members))
-
-    ctx = MdxContext(
-        question=effective_question,
-        cube_schema=schema,
-        history=req.history,
-        model_profile=model_profile,
-        grounded_members=grounded_members,
-        similar_queries=similar,
-    )
-
-    agent_result = run_mdx_agent(ctx)
-
-    if agent_result.error or not agent_result.rows:
-        status = agent_result.error or "no data"
-        return {
-            "cube": cube,
-            "reasoning": source_reasoning,
-            "status": status,
-            "generated_mdx": agent_result.mdx,
-            "mdx_attempts": [f"{s.tool}: {s.result_summary}" for s in agent_result.steps],
-        }
-
-    preview = build_cube_preview(
-        agent_result.rows, agent_result.layout, forced_apply_attributes or None
-    )
-    record_query(
-        effective_question, cube, agent_result.mdx,
-        row_count=preview.effective_row_count,
-        grounded_members=grounded_members,
-    )
-    return _CubeResult(
-        cube=cube,
-        reasoning=source_reasoning,
-        rows=agent_result.rows,
-        layout=agent_result.layout,
-        mdx=agent_result.mdx,
-        mdx_attempts=[f"{s.tool}: {s.result_summary}" for s in agent_result.steps],
-        full_preview=preview.full,
-        limited_preview=preview.limited,
-        effective_row_count=preview.effective_row_count,
-    )
 
 
 # ── Stage 4: stream analysis ─────────────────────────────────────────────────
@@ -342,6 +161,7 @@ def analyze_sse_gen(req: QuestionRequest, request: Request | None = None):
     if _client_disconnected(request):
         return
 
+    # Stage 1: Deterministic early clarification (year/scenario/unclear query).
     clarification = _early_clarification(question, req.history, model_profile)
     if clarification:
         yield _evt({"type": "done", "data": {
@@ -350,109 +170,79 @@ def analyze_sse_gen(req: QuestionRequest, request: Request | None = None):
         }})
         return
 
-    schema_cache = _RequestSchemaCache()
-    forced_apply_attributes = _forced_attribute_intent(question, req.history, schema_cache)
+    effective_question = effective_question_from_history(question, req.history)
 
     yield _evt({"type": "step", "step": 1})
-    cube_selection = _select_cubes_stage(
-        question, req, model_profile,
-    )
-    if cube_selection.error is not None:
-        yield _evt({"type": "error", "message": cube_selection.error})
+
+    # Stage 2: Agentic loop — discovers cube, resolves elements, generates MDX.
+    # run_agent is a generator: yields ('event', dict) for live tool progress,
+    # then exactly one ('result', AgentResult) before returning.
+    agent_result = None
+    for kind, payload in run_agent(
+        effective_question,
+        req.history,
+        model_profile,
+        selected_cubes=req.selected_cubes or None,
+    ):
+        if _client_disconnected(request):
+            return
+        if kind == "event":
+            yield _evt({"type": "agent_step", **payload})
+        elif kind == "result":
+            agent_result = payload
+            break
+
+    if agent_result is None:
+        yield _evt({"type": "error", "message": "Agent terminated without a result."})
         return
-    if cube_selection.clarification is not None:
+
+    if _client_disconnected(request):
+        return
+
+    if agent_result.clarification:
         yield _evt({"type": "done", "data": {
             "success": True, "type": "clarification",
-            "question": question, "analysis": cube_selection.clarification,
+            "question": question, "analysis": agent_result.clarification,
         }})
         return
 
-    if _client_disconnected(request):
+    if agent_result.error or not agent_result.rows:
+        message = agent_result.error or "No data found for this question."
+        yield _evt({"type": "error", "message": message})
         return
+
+    # Stage 3: Build structured preview from the agent's result.
+    preview = build_cube_preview(agent_result.rows, agent_result.layout)
+
+    cube_result = _CubeResult(
+        cube=agent_result.cube,
+        reasoning=agent_result.reasoning,
+        rows=agent_result.rows,
+        layout=agent_result.layout,
+        mdx=agent_result.mdx,
+        mdx_attempts=[f"{s.tool}: {s.result_summary}" for s in agent_result.steps],
+        full_preview=preview.full,
+        limited_preview=preview.limited,
+        effective_row_count=preview.effective_row_count,
+    )
+
     yield _evt({"type": "step", "step": 2})
 
-    effective_question = effective_question_from_history(question, req.history)
-    selected_cubes = cube_selection.selected_cubes
-    reasoning = cube_selection.reasoning
-    user_scoped = cube_selection.user_scoped
-    cube_limit = CUBE_SELECT_LIMIT_MANUAL if user_scoped else CUBE_SELECT_LIMIT_AUTO
-    # Deduplicate and cap the cube list while preserving order.
-    seen_cubes: set[str] = set()
-    ordered_cubes: list[dict] = []
-    for selected in selected_cubes[:cube_limit]:
-        cube = str(selected.get("cube", "")).strip()
-        if not cube or cube in seen_cubes:
-            continue
-        seen_cubes.add(cube)
-        ordered_cubes.append(selected)
-
-    # Pre-populate schema cache sequentially (fast SQLite reads) so parallel
-    # workers never race on the same cache key.
-    for selected in ordered_cubes:
-        try:
-            schema_cache.get(str(selected.get("cube", "")).strip())
-        except Exception:
-            pass  # _process_cube handles the schema error cleanly
-
-    if _client_disconnected(request):
-        return
-
-    # Run each cube in parallel; preserve original ordering for the sources list.
-    sources: list[_CubeResult] = []
-    skipped_sources: list[dict[str, Any]] = []
-
-    def _run(idx: int, selected: dict) -> tuple[int, _CubeResult | dict]:
-        return idx, _process_cube(
-            selected, effective_question, req, model_profile,
-            forced_apply_attributes, schema_cache,
-        )
-
-    n = len(ordered_cubes)
-    with ThreadPoolExecutor(max_workers=n or 1) as pool:
-        futures = [pool.submit(_run, i, sel) for i, sel in enumerate(ordered_cubes)]
-        indexed: list[tuple[int, _CubeResult | dict]] = []
-        for future in as_completed(futures):
-            try:
-                indexed.append(future.result())
-            except Exception as exc:
-                _log.warning("[parallel-cubes] unexpected error: %s", exc)
-
-    for _, outcome_obj in sorted(indexed, key=lambda t: t[0]):
-        if isinstance(outcome_obj, _CubeResult):
-            sources.append(outcome_obj)
-        else:
-            skipped_sources.append(outcome_obj)
-
-    if not sources:
-        message, detail = no_usable_data_message(skipped_sources)
-        payload: dict[str, Any] = {
-            "type": "error",
-            "message": message,
-            "detail": detail,
-            "skipped": skipped_sources,
-        }
-        if user_scoped:
-            payload["scope_filtered"] = True
-            payload["scoped_cubes"] = [str(c.get("cube", "")) for c in selected_cubes]
-        yield _evt(payload)
-        return
-
-    if _client_disconnected(request):
-        return
-    yield _evt({"type": "step", "step": 3})
-
-    source_dicts = [s.to_source_dict() for s in sources]
+    source_dicts = [cube_result.to_source_dict()]
     _internal = {"analysis_rows", "_full_preview"}
     response_sources = [{k: v for k, v in s.items() if k not in _internal} for s in source_dicts]
     yield _evt({
         "type": "sources",
         "sources": response_sources,
-        "skipped": skipped_sources,
-        "reasoning": reasoning,
+        "skipped": [],
+        "reasoning": agent_result.reasoning,
     })
 
+    # Stage 4: Stream narrative analysis.
+    yield _evt({"type": "step", "step": 3})
+
     full_text = ""
-    for kind, payload in _stream_analysis(question, source_dicts, skipped_sources, req.history):
+    for kind, payload in _stream_analysis(question, source_dicts, [], req.history):
         if _client_disconnected(request):
             return
         if kind == "chunk":
@@ -463,17 +253,16 @@ def analyze_sse_gen(req: QuestionRequest, request: Request | None = None):
 
     analysis, suggestions = _parse_suggestions(full_text)
     first = source_dicts[0]
-    # Re-attach analysis_rows so the frontend can offer full CSV export.
     for rs, s in zip(response_sources, source_dicts):
         rs["analysis_rows"] = s["analysis_rows"]
     yield _evt({"type": "done", "data": {
         "success": True, "type": "analysis", "question": question,
         "chosen_cube": first["cube"],
-        "reasoning": reasoning,
-        "data_row_count": sum(s["data_row_count"] for s in source_dicts),
+        "reasoning": agent_result.reasoning,
+        "data_row_count": cube_result.effective_row_count,
         "data_preview": first["data_preview"],
         "data_sources": response_sources,
-        "skipped_sources": skipped_sources,
+        "skipped_sources": [],
         "analysis": analysis,
         "suggestions": suggestions,
     }})

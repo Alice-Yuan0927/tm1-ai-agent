@@ -288,7 +288,7 @@ CUBE_SELECT_MAX_TOKENS = env_int("CUBE_SELECT_MAX_TOKENS", 700)
 ANALYSIS_MAX_TOKENS = env_int("ANALYSIS_MAX_TOKENS", 1800)
 
 # Semantic profile generation: compact JSON mapping schema terms to business language.
-SEMANTIC_PROFILE_MAX_TOKENS = env_int("SEMANTIC_PROFILE_MAX_TOKENS", 6000)
+SEMANTIC_PROFILE_MAX_TOKENS = env_int("SEMANTIC_PROFILE_MAX_TOKENS", 12000)
 
 # ── Conversation context window ───────────────────────────────────────────────
 HISTORY_WINDOW = env_int("HISTORY_WINDOW", 4)

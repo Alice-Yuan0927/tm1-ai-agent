@@ -134,6 +134,10 @@ Dimensions and their available elements:
 </conversation>
 
 <workflow>
+0. For financial statement requests (P&L, balance sheet, cash flow, trial balance),
+   call list_views_from_cube first. If a relevant view exists, call
+   get_mdx_from_view and adapt that MDX's filters/axes instead of inventing the
+   statement row structure from scratch.
 1. If you need business context about the cube (what it tracks, typical uses,
    available measures), call get_cube_summary first.
 2. If uncertain about element names, call search_elements or get_dimension_members.
@@ -186,7 +190,14 @@ Hard rules for valid TM1 MDX:
         if step_num >= max_steps - 1:
             break
 
-        messages.append({"role": "assistant", "tool_calls": tool_calls})
+        raw_content = tool_calls[0].pop("_raw_content", None) if tool_calls else None
+        reasoning_content = tool_calls[0].pop("_reasoning_content", None) if tool_calls else None
+        msg: dict = {"role": "assistant", "tool_calls": tool_calls}
+        if raw_content:
+            msg["_raw_content"] = raw_content
+        if reasoning_content:
+            msg["_reasoning_content"] = reasoning_content
+        messages.append(msg)
 
         for tc in tool_calls:
             tool_name = tc["name"]

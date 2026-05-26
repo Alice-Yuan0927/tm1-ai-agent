@@ -3,7 +3,7 @@
 import json
 import re
 
-from ..schema.tm1_lexicon import STATEMENT_PATTERN
+from ..schema.tm1_lexicon import CURRENCY_VIEW_PATTERNS, STATEMENT_PATTERN
 
 _STATEMENT_QUESTION_RE = re.compile(
     rf"(?:{STATEMENT_PATTERN.pattern}|balance\s+sheet|cash\s+flow|trial\s+balance)",
@@ -45,6 +45,120 @@ def _profile_dim_defaults(model_profile: dict | None) -> dict[str, str]:
         if k not in _RESERVED_DEFAULT_FILTER_KEYS
         and isinstance(v, str) and v.strip()
     }
+
+
+def _question_currency_view(question: str) -> str:
+    text = (question or "").lower()
+    for pattern, view in CURRENCY_VIEW_PATTERNS:
+        if re.search(pattern, text):
+            return view
+    return "local"
+
+
+def _element_attr_text(dim: dict, element: str) -> str:
+    values = (dim.get("element_attr_values") or {}).get(element) or {}
+    return " ".join(str(v) for v in values.values()).lower()
+
+
+def _currency_view_score(dim: dict, element: str, view: str) -> int:
+    blob = f"{element} {_element_attr_text(dim, element)}".lower()
+    score = 0
+    if view == "parent":
+        if "parent currency" in blob:
+            score += 40
+        if "group currency" in blob:
+            score += 35
+        if "reporting currency" in blob or "translated" in blob:
+            score += 25
+    else:
+        if "entity currency" in blob:
+            score += 40
+        if "local currency" in blob:
+            score += 35
+        if re.search(r"\blcy\b", blob):
+            score += 25
+
+    if re.search(r"\b(total|adjustment|adj|gaap)\b", blob):
+        score -= 12
+    if re.search(r"\b(all|list)\b", blob):
+        score -= 25
+    if element in {str(e) for e in dim.get("consolidations", []) or []}:
+        score -= 8
+    return score
+
+
+def _currency_view_default(dim: dict, question: str) -> str:
+    """Pick the data-bearing currency-view leaf for a local/parent request."""
+    elements = [str(e) for e in dim.get("elements", []) or [] if e]
+    if not elements:
+        return ""
+
+    view = _question_currency_view(question)
+    scored = [
+        (_currency_view_score(dim, element, view), -index, element)
+        for index, element in enumerate(elements)
+    ]
+    scored = [item for item in scored if item[0] > 0]
+    if not scored:
+        return ""
+    scored.sort(reverse=True)
+    return scored[0][2]
+
+
+def _shape(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value).lower())
+
+
+def _question_explicit_dim_member_overrides(cube_schema: dict, question: str) -> dict[str, str]:
+    """Parse explicit corrections like "Dimension X should be Element Y"."""
+    question_shape = _shape(question)
+    if not question_shape:
+        return {}
+
+    overrides: dict[str, str] = {}
+    for dim in cube_schema.get("dimensions") or []:
+        dim_name = str(dim.get("name", ""))
+        if not dim_name or _shape(dim_name) not in question_shape:
+            continue
+
+        candidates = (
+            list(dim.get("elements", []) or [])
+            + list(dim.get("consolidations", []) or [])
+            + list(dim.get("top_consolidations", []) or [])
+        )
+        matches = [
+            str(element)
+            for element in dict.fromkeys(candidates)
+            if _shape(str(element)) and _shape(str(element)) in question_shape
+        ]
+        if not matches:
+            continue
+        matches.sort(key=lambda value: len(_shape(value)), reverse=True)
+        overrides[dim_name] = matches[0]
+    return overrides
+
+
+def _data_source_default(dim: dict) -> str:
+    """Pick the primary data-bearing leaf for a data_source dim.
+
+    These dims (e.g. S Consol GL Company Entry) have a catch-all consolidation
+    ('All Data Sources') and several named leaf elements that represent real data
+    feeds. The first leaf whose attributes signal entity/local currency is
+    returned. Returns '' when no clear primary leaf can be determined.
+    """
+    elements = [str(e) for e in dim.get("elements", []) or [] if e]
+    if not elements:
+        return ""
+    consolidations = {str(e) for e in dim.get("consolidations", []) or []}
+
+    for element in elements:
+        if element in consolidations:
+            continue
+        blob = f"{element} {_element_attr_text(dim, element)}".lower()
+        if "entity currency" in blob or "local currency" in blob:
+            return element
+
+    return ""
 
 
 def _estimate_descendants(dim_name: str, element_name: str, limit: int) -> int:
@@ -161,6 +275,18 @@ def profile_defaults_directive(
     schema_dims = {str(d.get("name", "")): d for d in (cube_schema.get("dimensions") or [])}
     relevant = {k: v for k, v in overrides.items() if k in schema_dims}
 
+    from ..schema.dim_roles import get_dim_role
+    profile_roles = (model_profile or {}).get("dim_roles") or {}
+    for dim in (cube_schema.get("dimensions") or []):
+        dim_name = str(dim.get("name", ""))
+        if not dim_name or dim_name in relevant:
+            continue
+        if get_dim_role(dim, profile_roles) != "currency_view":
+            continue
+        default = _currency_view_default(dim, question)
+        if default:
+            relevant[dim_name] = default
+
     # For period/month dims excluded from _profile_dim_defaults, inject the
     # all-periods consolidation unless the question explicitly names a month.
     # Aligns with mdx_hard_rules rule 26: when no specific month/quarter is
@@ -178,6 +304,8 @@ def profile_defaults_directive(
             all_period = _best_all_period(consolidations, dim_name)
             if all_period:
                 relevant[dim_name] = all_period
+
+    relevant.update(_question_explicit_dim_member_overrides(cube_schema, question))
 
     if not relevant:
         return ""

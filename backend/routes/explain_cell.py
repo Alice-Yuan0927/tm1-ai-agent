@@ -6,7 +6,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from ..services.cell_explain_service import explain_root_cause, explain_tx_history, explain_variance
+from ..services.cell_explain_service import explain_root_cause, explain_tx_history
 
 _log = logging.getLogger(__name__)
 router = APIRouter()
@@ -23,23 +23,24 @@ class ExplainCellRequest(BaseModel):
     cube: str
     tuple: list[TupleElement]
     value: Optional[str] = None
-    action: Literal["explain_calc", "tx_history", "compare_baseline", "root_cause", "followup"]
-    baseline: Optional[str] = "Plan"
-    baselines: Optional[list[str]] = None
+    action: Literal["tx_history", "root_cause", "followup"]
+    scenarios: Optional[list[str]] = None
     question: Optional[str] = None
+    tx_start: Optional[str] = None
+    tx_end: Optional[str] = None
+    tx_max_pages: Optional[int] = 3
 
 
 @router.get("/api/cube-scenarios")
 async def cube_scenarios(cube: str, dimension: str = ""):
-    """Return leaf elements of the scenario/version dimension for a cube."""
+    """Return leaf elements of the scenario/version dimension for compare cards."""
     try:
         from TM1py import TM1Service
         from ..config import get_tm1_config
-        from ..services.cell_explain_service import _find_baseline_dim_idx, _BASELINE_DIM_KEYWORDS
+        from ..services.cell_explain_service import _BASELINE_DIM_KEYWORDS
 
         with TM1Service(**get_tm1_config()) as tm1:
-            dim_names = tm1.cubes.get_dimension_names(cube)
-            # Find scenario dim: use provided name, else auto-detect
+            dim_names = list(tm1.cubes.get_dimension_names(cube))
             scenario_dim = dimension
             if not scenario_dim:
                 for d in dim_names:
@@ -49,12 +50,11 @@ async def cube_scenarios(cube: str, dimension: str = ""):
             if not scenario_dim:
                 return {"dimension": "", "elements": []}
             elements = list(tm1.elements.get_element_names(scenario_dim, scenario_dim))
-            # Return leaf/N elements only (skip consolidations)
             leaves = []
             for e in elements:
                 try:
                     el = tm1.elements.get(scenario_dim, scenario_dim, e)
-                    if hasattr(el, 'element_type') and str(el.element_type) != 'Consolidated':
+                    if str(getattr(el, "element_type", "")).lower() != "consolidated":
                         leaves.append(e)
                 except Exception:
                     leaves.append(e)
@@ -102,12 +102,16 @@ async def explain_cell(req: ExplainCellRequest):
     elements = [e.model_dump() for e in req.tuple]
     _log.info("explain-cell dims: %s", [e["dimension"] for e in elements])
     try:
-        if req.action in ("compare_baseline", "explain_calc"):
-            return explain_variance(req.cube, elements, req.value, req.baseline or "Plan", req.baselines)
         if req.action == "root_cause":
-            return explain_root_cause(req.cube, elements, req.value, req.baseline or "Plan", req.baselines)
+            return explain_root_cause(req.cube, elements, req.value, req.scenarios)
         if req.action == "tx_history":
-            return explain_tx_history(req.cube, elements)
+            return explain_tx_history(
+                req.cube,
+                elements,
+                tx_start=req.tx_start,
+                tx_end=req.tx_end,
+                tx_max_pages=req.tx_max_pages or 3,
+            )
         if req.action == "followup":
             return {
                 "action": "followup",

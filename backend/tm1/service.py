@@ -189,6 +189,26 @@ def _hierarchy_levels(
     return result
 
 
+def _row_consolidations(
+    row_values: dict[str, list[str]],
+    row_dimensions: list[str],
+    dim_metadata: dict[str, dict],
+) -> dict[str, list[str]]:
+    result: dict[str, list[str]] = {}
+    for dim_name in row_dimensions:
+        consolidated = set(dim_metadata.get(dim_name, {}).get("consolidated", set()))
+        if not consolidated:
+            continue
+        visible = [
+            str(value)
+            for value in row_values.get(dim_name, [])
+            if value not in ("", None) and str(value) in consolidated
+        ]
+        if visible:
+            result[dim_name] = visible
+    return result
+
+
 def build_structured_preview(
     rows: list[dict],
     layout: dict | None = None,
@@ -210,7 +230,8 @@ def build_structured_preview(
         return {
             "filters": [], "row_dimensions": [], "measure_dimension": "",
             "columns": [], "rows": [],
-            "consolidated_columns": [], "column_dim_is_time": False,
+            "consolidated_columns": [], "row_consolidations": {},
+            "column_dim_is_time": False,
             "transpose": False, "row_hierarchy": {},
         }
 
@@ -274,6 +295,7 @@ def build_structured_preview(
             "columns": columns,
             "rows": aliased_rows,
             "row_hierarchy": _hierarchy_levels(unique_by_dimension, layout, hierarchy_edges),
+            "row_consolidations": _row_consolidations(unique_by_dimension, row_dimensions, dm),
             "consolidated_columns": consolidated_columns,
             "column_dim_is_time": col_dim_is_time,
             "transpose": not col_dim_is_time and len(columns) > TRANSPOSE_COLS,
@@ -323,10 +345,64 @@ def build_structured_preview(
         "columns": columns,
         "rows": aliased_rows,
         "row_hierarchy": _hierarchy_levels(unique_by_dimension, layout, hierarchy_edges),
+        "row_consolidations": _row_consolidations(unique_by_dimension, row_dimensions, dm),
         "consolidated_columns": consolidated_columns,
         "column_dim_is_time": col_dim_is_time,
         "transpose": not col_dim_is_time and len(columns) > TRANSPOSE_COLS,
     }
+
+
+def list_cube_views(cube_name: str) -> list[dict[str, object]]:
+    """Return public/private view names for one cube when TM1py exposes them."""
+    views: list[dict[str, object]] = []
+    with TM1Service(**get_tm1_config()) as tm1:
+        namespace = tm1.cubes.views
+        for private in (False, True):
+            names: list[str] = []
+            last_error: Exception | None = None
+            try:
+                raw = namespace.get_all_names(cube_name, private=private)
+                names = [str(item) for item in raw]
+            except Exception as exc:
+                last_error = exc
+            if not names:
+                try:
+                    raw = namespace.get_all_names(cube_name, private)
+                    names = [str(item) for item in raw]
+                except Exception as exc:
+                    last_error = exc
+            if not names and not private:
+                try:
+                    raw = namespace.get_all_names(cube_name)
+                    names = [str(item) for item in raw]
+                except Exception as exc:
+                    last_error = exc
+            if not names:
+                try:
+                    raw_views = namespace.get_all(cube_name, private=private)
+                    names = [
+                        str(getattr(view, "name", "") or getattr(view, "Name", ""))
+                        for view in raw_views
+                    ]
+                except Exception as exc:
+                    last_error = exc
+            if last_error and not names:
+                _log.debug("view listing failed for %s private=%s: %s", cube_name, private, last_error)
+            for name in names:
+                if name:
+                    views.append({"name": name, "private": private})
+    return views
+
+
+def get_cube_view_mdx(cube_name: str, view_name: str, private: bool = False) -> str:
+    """Return the MDX text behind a TM1 cube view when available."""
+    with TM1Service(**get_tm1_config()) as tm1:
+        view = tm1.cubes.views.get(cube_name, view_name, private=private)
+    for attr in ("MDX", "mdx"):
+        value = getattr(view, attr, None)
+        if value:
+            return str(value)
+    raise RuntimeError(f"View '{view_name}' in cube '{cube_name}' does not expose MDX")
 
 
 def get_cube_schema(cube_name: str) -> dict:

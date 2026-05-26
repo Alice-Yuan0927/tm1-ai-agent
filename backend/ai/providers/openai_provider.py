@@ -163,7 +163,7 @@ def _to_oai_chat_messages(messages: list[dict]) -> list[dict]:
                 "content": m["content"],
             })
         elif role == "assistant" and "tool_calls" in m:
-            out.append({
+            oai_msg: dict = {
                 "role": "assistant",
                 "content": None,
                 "tool_calls": [
@@ -177,7 +177,10 @@ def _to_oai_chat_messages(messages: list[dict]) -> list[dict]:
                     }
                     for tc in m["tool_calls"]
                 ],
-            })
+            }
+            if "_reasoning_content" in m:
+                oai_msg["reasoning_content"] = m["_reasoning_content"]
+            out.append(oai_msg)
         else:
             out.append({"role": role, "content": m.get("content", "")})
     return out
