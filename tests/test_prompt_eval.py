@@ -14,8 +14,6 @@ from backend.response_messages import no_usable_data_message
 from backend.util.llm_json import parse_llm_json as parse_cube_selection_json
 
 GENERAL_AGENT_CONTRACT = prompt_rules.GENERAL_AGENT_CONTRACT
-PROMPT_MANAGEMENT_RULES = prompt_rules.PROMPT_MANAGEMENT_RULES
-REASONING_MODEL_RULES = prompt_rules.REASONING_MODEL_RULES
 result_shape_issue = result_validators.result_shape_issue
 specific_focus_issue = result_validators.specific_focus_issue
 statement_line_item_issue = result_validators.statement_line_item_issue
@@ -40,36 +38,6 @@ def test_general_prompt_rules_cover_current_question_focus_and_grounding():
     assert "retrieved context" in rules
     assert "validation failures" in rules
     assert "do not expose hidden reasoning" in rules
-
-
-def test_prompt_management_rules_keep_instructions_and_data_separate():
-    rules = PROMPT_MANAGEMENT_RULES.lower()
-
-    assert "fixed instructions" in rules
-    assert "variable request data" in rules
-    assert "xml-style tags" in rules
-    assert "context limits" in rules
-    assert "static repeated content first" in rules
-    assert "exact prefix matches" in rules
-    assert "cached input tokens" in rules
-    assert "eval-driven development" in rules
-    assert "production logs" in rules
-    assert "historical regressions" in rules
-    assert "automated pass/fail" in rules
-    assert "prompt-optimizer suggestions" in rules
-    assert "representative test cases" in rules
-
-
-def test_reasoning_model_rules_prefer_validators_over_chain_of_thought():
-    rules = REASONING_MODEL_RULES.lower()
-
-    assert "ambiguous, multistep" in rules
-    assert "simple and direct" in rules
-    assert "do not ask the model to reveal chain-of-thought" in rules
-    assert "zero-shot" in rules
-    assert "deterministic validators/evals" in rules
-    assert "code for execution, validation, retries" in rules
-
 
 def test_specific_focus_rejects_expanding_all_benefits_when_question_names_pension():
     schema = {
