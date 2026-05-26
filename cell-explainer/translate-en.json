@@ -1,0 +1,13 @@
+{
+    "CELLEXPLAINER": "Cell Explainer",
+    "EXPLAINWITHAI": "Explain with AI",
+    "PASTECELLREFERENCE": "Paste Cell Reference here",
+    "CAPTUREDTUPLE": "Captured Tuple",
+    "EXPLAINCALCULATION": "Explain Calculation",
+    "TRANSACTIONHISTORY": "Transaction History",
+    "COMPARETOBASELINE": "Compare to Baseline",
+    "FINDROOTCAUSE": "Find Root Cause",
+    "STARTOVER": "Start Over",
+    "BACKENDERROR": "Backend Error",
+    "TESTCONNECTION": "Test TM1 Connection"
+}

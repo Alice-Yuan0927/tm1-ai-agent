@@ -10,6 +10,7 @@ except ImportError:  # pragma: no cover - covered by environments without option
     OpenAI = None
 
 from .config import LLM_MODELS_PATH, get_llm_api_key, get_llm_model, get_llm_provider
+from .util.io import atomic_write_json
 
 
 STATIC_LLM_MODEL_CATALOG: dict[str, dict[str, Any]] = {
@@ -67,7 +68,7 @@ STATIC_LLM_MODEL_CATALOG: dict[str, dict[str, Any]] = {
     },
 }
 
-EXECUTION_PROVIDERS = {"openai", "anthropic"}
+EXECUTION_PROVIDERS = {"openai", "anthropic", "deepseek"}
 _REQUEST_TIMEOUT = 12
 
 
@@ -213,8 +214,7 @@ def _copy_catalog(catalog: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any
 
 
 def _write_catalog(catalog: dict[str, dict[str, Any]]) -> None:
-    LLM_MODELS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    LLM_MODELS_PATH.write_text(json.dumps(catalog, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(LLM_MODELS_PATH, catalog)
 
 
 def _utc_now() -> str:

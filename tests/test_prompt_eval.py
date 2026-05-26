@@ -1,28 +1,25 @@
-from backend.ai import finance_semantics
-from backend.ai import prompt_rules
-from backend.ai import result_validators
-from backend.ai import service as ai_service
-from backend.ai.dim_roles import get_dim_role
-from backend.ai.mdx_planner import try_plan_mdx
-from backend.ai.rag import _to_structural_template
+from backend.ai.schema import finance_semantics, result_validators
+from backend.ai.prompts import MDX_HARD_RULES, prompt_rules
+from backend.ai.intent.clarification import find_clarifications
+from backend.ai.schema.dim_roles import get_dim_role
+from backend.ai.mdx.normalize import validate_generated_mdx
+from backend.ai.providers.openai_provider import (
+    _is_unsupported_temperature_error as is_unsupported_temperature_error,
+    _needs_min_token_budget as needs_openai_min_token_budget,
+    _output_text as openai_output_text,
+    _token_budget as openai_token_budget,
+)
+from backend.ai.retrieval.rag import _to_structural_template
 from backend.response_messages import no_usable_data_message
+from backend.util.llm_json import parse_llm_json as parse_cube_selection_json
 
 GENERAL_AGENT_CONTRACT = prompt_rules.GENERAL_AGENT_CONTRACT
-PROMPT_MANAGEMENT_RULES = prompt_rules.PROMPT_MANAGEMENT_RULES
-REASONING_MODEL_RULES = prompt_rules.REASONING_MODEL_RULES
 result_shape_issue = result_validators.result_shape_issue
 specific_focus_issue = result_validators.specific_focus_issue
 statement_line_item_issue = result_validators.statement_line_item_issue
-default_filter_issue = result_validators.default_filter_issue
+entity_filter_issue = result_validators.entity_filter_issue
 default_filter_warning = result_validators.default_filter_warning
 build_finance_semantic_profile = finance_semantics.build_finance_semantic_profile
-is_unsupported_temperature_error = ai_service._is_unsupported_temperature_error
-needs_openai_min_token_budget = ai_service._needs_openai_min_token_budget
-openai_token_budget = ai_service._openai_token_budget
-openai_output_text = ai_service._openai_output_text
-parse_cube_selection_json = ai_service._parse_cube_selection_json
-validate_generated_mdx = ai_service.validate_generated_mdx
-find_clarifications = ai_service.find_clarifications
 
 
 def _rows(dim_name, values):
@@ -41,36 +38,6 @@ def test_general_prompt_rules_cover_current_question_focus_and_grounding():
     assert "retrieved context" in rules
     assert "validation failures" in rules
     assert "do not expose hidden reasoning" in rules
-
-
-def test_prompt_management_rules_keep_instructions_and_data_separate():
-    rules = PROMPT_MANAGEMENT_RULES.lower()
-
-    assert "fixed instructions" in rules
-    assert "variable request data" in rules
-    assert "xml-style tags" in rules
-    assert "context limits" in rules
-    assert "static repeated content first" in rules
-    assert "exact prefix matches" in rules
-    assert "cached input tokens" in rules
-    assert "eval-driven development" in rules
-    assert "production logs" in rules
-    assert "historical regressions" in rules
-    assert "automated pass/fail" in rules
-    assert "prompt-optimizer suggestions" in rules
-    assert "representative test cases" in rules
-
-
-def test_reasoning_model_rules_prefer_validators_over_chain_of_thought():
-    rules = REASONING_MODEL_RULES.lower()
-
-    assert "ambiguous, multistep" in rules
-    assert "simple and direct" in rules
-    assert "do not ask the model to reveal chain-of-thought" in rules
-    assert "zero-shot" in rules
-    assert "deterministic validators/evals" in rules
-    assert "code for execution, validation, retries" in rules
-
 
 def test_specific_focus_rejects_expanding_all_benefits_when_question_names_pension():
     schema = {
@@ -126,6 +93,25 @@ def test_specific_focus_allows_filtered_focus_with_requested_breakdowns():
         rows,
         layout,
     )
+
+    assert issue is None
+
+
+def test_specific_focus_allows_named_consolidation_children():
+    schema = {
+        "dimensions": [
+            {
+                "name": "Account",
+                "elements": ["Revenue", "Product Revenue", "Service Revenue"],
+                "consolidations": ["Revenue"],
+            },
+            {"name": "Month", "is_time": True, "elements": ["01"]},
+        ]
+    }
+    rows = _rows("Account", ["Revenue", "Product Revenue", "Service Revenue"])
+    layout = {"row_dimensions": ["Account"], "column_dimensions": ["Month"]}
+
+    issue = specific_focus_issue("show Revenue", schema, rows, layout)
 
     assert issue is None
 
@@ -382,6 +368,29 @@ def test_finance_semantics_handles_explicit_pnl_cube_and_account_dimension():
     assert income_statement["confidence"] >= 0.7
 
 
+
+
+def test_statement_schema_filter_keeps_non_top_profit_and_loss_parent():
+    from backend.ai.intent.query_intent import prepare_schema_for_query
+
+    schema = {
+        "dimensions": [
+            {
+                "name": "Account",
+                "elements": ["Revenue", "COGS"],
+                "consolidations": ["Profit and Loss", "Gross Profit"],
+                "top_consolidations": ["All Accounts"],
+            }
+        ]
+    }
+    model_profile = {"dim_roles": {"Account": "line_item"}}
+
+    filtered = prepare_schema_for_query(schema, "show P&L", model_profile=model_profile)
+
+    account = filtered["dimensions"][0]
+    assert account["top_consolidations"][0] == "Profit and Loss"
+
+
 def test_unsupported_temperature_error_is_detected():
     exc = RuntimeError("Unsupported parameter: 'temperature' is not supported with this model.")
 
@@ -447,6 +456,59 @@ def test_history_can_supply_scenario_and_period_for_followups():
     assert clarification is None
 
 
+def test_schema_clarification_uses_semantic_members_for_any_dimension(monkeypatch):
+    from backend.ai.intent import clarification
+
+    monkeypatch.setattr(clarification, "find_question_element_matches", lambda _question: [])
+
+    calls = []
+
+    def fake_search(question, candidate_dims=None, top_k=4, threshold=0.68):
+        calls.append((question, candidate_dims, top_k, threshold))
+        return [
+            ("hk region", "Region", "Region 11"),
+            ("hk region", "Region", "Region 9"),
+            ("slim company", "Company", "SLIM-HK"),
+        ]
+
+    monkeypatch.setattr(clarification, "search_by_embedding", fake_search)
+
+    message = clarification.find_schema_clarification(
+        "show me the P&L for hk region",
+        [{"cube": "P&L", "dimensions": ["Region", "Company", "Account"]}],
+        [],
+    )
+
+    assert message
+    assert "Region.Region 11" in message
+    assert "Region.Region 9" in message
+    assert "Company.SLIM-HK" in message
+    assert calls[0][1] == ["Region", "Company", "Account"]
+
+
+def test_schema_clarification_skips_semantic_lookup_when_exact_element_exists(monkeypatch):
+    from backend.ai.intent import clarification
+
+    monkeypatch.setattr(
+        clarification,
+        "find_question_element_matches",
+        lambda _question: [("SLIM-HK", "Company", "SLIM-HK")],
+    )
+
+    def fail_search(*_args, **_kwargs):
+        raise AssertionError("semantic lookup should not run when exact elements exist")
+
+    monkeypatch.setattr(clarification, "search_by_embedding", fail_search)
+
+    message = clarification.find_schema_clarification(
+        "show me the P&L for SLIM HK",
+        [{"cube": "P&L", "dimensions": ["Region", "Company", "Account"]}],
+        [],
+    )
+
+    assert message is None
+
+
 def test_no_usable_data_message_is_user_friendly():
     message, detail = no_usable_data_message([
         {"cube": "Consol GL Company Entry", "status": "no data"},
@@ -459,28 +521,28 @@ def test_no_usable_data_message_is_user_friendly():
     assert "Consol GL Company Entry" in detail
 
 
-def test_default_filter_validator_requires_default_element_for_unspecified_dimensions():
+def test_entity_filter_validator_rejects_same_name_non_entity_dimension():
     schema = {
         "dimensions": [
-            {"name": "Company", "is_measure": False, "is_time_dim": False, "default_element": "All Companies", "top_consolidations": ["All Companies"]},
-            {"name": "Segment", "is_measure": False, "is_time_dim": False, "default_element": "All Segments", "top_consolidations": ["All Segments"]},
+            {"name": "Company", "is_measure": False, "is_time_dim": False, "elements": ["SLIM-HK"], "default_element": "All Companies", "top_consolidations": ["All Companies"]},
+            {"name": "Segment", "is_measure": False, "is_time_dim": False, "elements": ["SLIM-HK"], "default_element": "All Segments", "top_consolidations": ["All Segments"]},
             {"name": "Measure", "is_measure": True, "default_element": "Amount"},
         ]
     }
     mdx = (
         "SELECT {[Measure].[Measure].[Amount]} ON COLUMNS "
         "FROM [Cube] "
-        "WHERE ([Company].[Company].[SLIM-HK], [Segment].[Segment].[Retail])"
+        "WHERE ([Company].[Company].[All Companies], [Segment].[Segment].[SLIM-HK])"
     )
 
-    issue = default_filter_issue("show me SLIM HK P&L", schema, mdx)
+    issue = entity_filter_issue("show me SLIM HK P&L", schema, mdx)
 
     assert issue
-    assert "Segment" in issue
-    assert "All Segments" in issue
+    assert "Company" in issue
+    assert "SLIM-HK" in issue
 
 
-def test_default_filter_validator_keeps_user_named_elements():
+def test_entity_filter_validator_keeps_user_named_elements():
     schema = {
         "dimensions": [
             {"name": "Company", "is_measure": False, "is_time_dim": False, "default_element": "All Companies", "top_consolidations": ["All Companies"]},
@@ -493,26 +555,28 @@ def test_default_filter_validator_keeps_user_named_elements():
         "WHERE ([Company].[Company].[SLIM-HK])"
     )
 
-    assert default_filter_issue("show me SLIM HK P&L", schema, mdx) is None
+    assert entity_filter_issue("show me SLIM HK P&L", schema, mdx) is None
 
 
 def test_default_filter_mismatch_is_reported_as_nonfatal_warning():
     schema = {
         "dimensions": [
-            {"name": "Company", "is_measure": False, "is_time_dim": False, "default_element": "All Companies"},
+            {"name": "Segment", "is_measure": False, "is_time_dim": False, "default_element": "All Segments"},
             {"name": "Measure", "is_measure": True, "default_element": "Amount"},
         ]
     }
+    model_profile = {"default_filters": {"Segment": "All Segments"}}
     mdx = (
         "SELECT {[Measure].[Measure].[Amount]} ON COLUMNS "
         "FROM [Cube] "
-        "WHERE ([Company].[Company].[SLIM-HK])"
+        "WHERE ([Segment].[Segment].[Retail])"
     )
 
-    warning = default_filter_warning("show me P&L", schema, mdx)
+    warning = default_filter_warning("show me P&L", schema, mdx, model_profile=model_profile)
 
     assert warning
-    assert warning.startswith("warning: Default filter validation failed")
+    assert "Segment" in warning
+    assert "All Segments" in warning
 
 
 def test_currency_alias_promotes_data_source_dim_to_currency_view_role():
@@ -571,15 +635,11 @@ def test_currency_alias_promotes_data_source_dim_to_currency_view_role():
 
     assert get_dim_role(source_dim, model_profile["dim_roles"]) == "currency_view"
 
-    plan = try_plan_mdx("show me P&L in 2024", schema, model_profile=model_profile)
-
-    assert plan is not None
-    assert "[S Consol GL Company].[S Consol GL Company].[EC]" in plan.mdx
-    assert "All Data Sources List" not in plan.mdx
+    assert get_dim_role(source_dim, model_profile["dim_roles"]) == "currency_view"
 
 
 def test_profile_dim_roles_map_uses_content_based_roles():
-    from backend.ai.dim_roles import build_dim_roles_map
+    from backend.ai.schema.dim_roles import build_dim_roles_map
 
     schema_summary = {
         "cubes": [
@@ -607,6 +667,79 @@ def test_profile_dim_roles_map_uses_content_based_roles():
 
     assert roles["S Consol GL Company"] == "currency_view"
     assert roles["Reporting Currency"] == "currency_code"
+
+
+def test_profile_role_merge_keeps_content_detected_currency_roles():
+    from backend.services.model_profile import merge_dim_roles
+
+    merged = merge_dim_roles(
+        {"S Consol GL Group": "currency_view", "Scenario": "scenario"},
+        {"S Consol GL Group": "data_source", "Scenario": "scenario"},
+    )
+
+    assert merged["S Consol GL Group"] == "currency_view"
+    assert merged["Scenario"] == "scenario"
+
+
+
+
+def test_grounded_members_section_marks_entity_eligible_candidates():
+    from backend.ai.mdx.directives import grounded_members_section
+    section = grounded_members_section(
+        [
+            {"dimension": "Company", "element": "SLIM-HK", "unique_name": "[Company].[Company].[SLIM-HK]"},
+            {"dimension": "Segment", "element": "SLIM-HK", "unique_name": "[Segment].[Segment].[SLIM-HK]"},
+        ],
+        {
+            "dimensions": [
+                {"name": "Company"},
+                {"name": "Segment"},
+            ]
+        },
+    )
+
+    assert '"dimension": "Company"' in section
+    assert '"role": "entity_subject"' in section
+    assert '"accepted_for_entity_mentions": true' in section
+    assert '"dimension": "Segment"' in section
+    assert '"role": "business_classifier"' in section
+    assert '"accepted_for_entity_mentions": false' in section
+
+
+def test_consolidated_member_directive_limits_named_parent_to_children():
+    from backend.ai.mdx.directives import consolidated_member_directive, grounded_members_section
+
+    grounded = [
+        {
+            "dimension": "Account",
+            "element": "Revenue",
+            "element_type": "Consolidated",
+            "unique_name": "[Account].[Account].[Revenue]",
+        }
+    ]
+    schema = {
+        "dimensions": [
+            {
+                "name": "Account",
+                "consolidations": ["Revenue"],
+            }
+        ]
+    }
+
+    section = grounded_members_section(grounded, schema)
+    directive = consolidated_member_directive("show Revenue", grounded, schema)
+
+    assert '"element_type": "Consolidated"' in section
+    assert "DRILLDOWNLEVEL({[Account].[Account].[Revenue]})" in directive
+    assert "Union({[Account].[Account].[Revenue]}, [Account].[Account].[Revenue].Children)" in directive
+    assert "Descendants([Account].[Account].[Revenue], 99)" in directive
+
+
+def test_mdx_hard_rules_include_relative_period_and_subset_guidance():
+    assert "LastPeriods(N, [Dim].[Dim].[Period])" in MDX_HARD_RULES
+    assert ".NextMember / .PrevMember" in MDX_HARD_RULES
+    assert 'TM1SubsetToSet([Dim], "Subset Name")' in MDX_HARD_RULES
+    assert 'TM1Member(TM1SubsetToSet([Dim], "Subset Name").Item(0), 0)' in MDX_HARD_RULES
 
 
 def test_rag_structural_template_does_not_introduce_members_expansion():

@@ -3,7 +3,9 @@ from .service import (
     build_structured_preview,
     execute_generated_mdx,
     get_cube_schema,
+    get_cube_view_mdx,
     get_cubes_with_descriptions,
+    list_cube_views,
 )
 
 __all__ = [
@@ -25,5 +27,7 @@ __all__ = [
     "build_structured_preview",
     "execute_generated_mdx",
     "get_cube_schema",
+    "get_cube_view_mdx",
     "get_cubes_with_descriptions",
+    "list_cube_views",
 ]

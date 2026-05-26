@@ -57,18 +57,53 @@ function _normalTable(preview, rowDimensions, measureColumns) {
   }).join("");
 
   const body = preview.rows.map(row => {
+    const rowInfo = _rowHierarchyInfo(preview, rowDimensions, row);
+    const rowTone = _hierarchyRowTone(rowInfo);
     const cells = headers.map((h, i) => {
       const isMeasure = i >= rowDimensions.length;
       const val   = row[h] ?? "";
+      const level = preview.row_hierarchy?.[h]?.[val];
+      const indent = !isMeasure && level > 0 ? ` style="padding-left:${12 + level * 18}px"` : "";
       const align = isMeasure
         ? "text-right font-mono text-cw-blueText"
-        : "text-left text-cw-text";
-      return `<td class="${align} whitespace-nowrap border-b border-cw-borderLow px-3 py-2">${fmt(val)}</td>`;
+        : `text-left ${rowInfo.isConsolidated ? "font-semibold text-slate-900" : "text-cw-text"}`;
+      return `<td class="${align} ${rowTone.cell} whitespace-nowrap border-b border-cw-borderLow px-3 py-2"${indent}>${fmt(val)}</td>`;
     }).join("");
-    return `<tr class="last:[&_td]:border-b-0 hover:[&_td]:bg-cw-blueLite">${cells}</tr>`;
+    return `<tr class="last:[&_td]:border-b-0 ${rowTone.hover}">${cells}</tr>`;
   }).join("");
 
   return _tableWrap(head, body);
+}
+
+function _rowHierarchyInfo(preview, rowDimensions, row) {
+  const levels = rowDimensions
+    .map(dim => preview.row_hierarchy?.[dim]?.[row[dim]])
+    .filter(level => typeof level === "number");
+  const isConsolidated = rowDimensions.some(dim => {
+    const values = preview.row_consolidations?.[dim] || [];
+    return values.includes(row[dim]);
+  });
+  return {
+    level: levels.length ? Math.min(...levels) : 3,
+    isConsolidated,
+  };
+}
+
+function _hierarchyRowTone(info) {
+  const { level, isConsolidated } = info;
+  if (level <= 0) {
+    return { cell: "bg-sky-100/95", hover: "hover:[&_td]:bg-sky-100" };
+  }
+  if (level === 1) {
+    return { cell: "bg-blue-50/95", hover: "hover:[&_td]:bg-blue-50" };
+  }
+  if (level === 2) {
+    return { cell: "bg-cyan-50/70", hover: "hover:[&_td]:bg-cyan-50" };
+  }
+  if (isConsolidated) {
+    return { cell: "bg-cyan-50/80", hover: "hover:[&_td]:bg-cyan-50" };
+  }
+  return { cell: "bg-white", hover: "hover:[&_td]:bg-cw-blueLite" };
 }
 
 // ── Transposed layout — measures become rows, original rows become columns ────

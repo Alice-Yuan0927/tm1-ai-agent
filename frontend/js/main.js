@@ -453,3 +453,48 @@ async function fetchSuggestions() {
 }
 
 fetchSuggestions();
+
+// ── Arc iframe integration ─────────────────────────────────────────────────
+// Two entry points from Arc's "Explain Cube with AI" right-click:
+//   1. ?cube=  query param  — on fresh page load (iframe src was set with param)
+//   2. postMessage          — tab already open, Arc sends { type:"arc:openCube", cube }
+
+function _arcOpenCube(cubeName) {
+  if (!cubeName) return;
+  selectedCubeScope.clear();
+  selectedCubeScope.add(cubeName);
+  _updateCubeScopeBadge();
+  const q = `Explain the "${cubeName}" cube: what are the key metrics, how is it structured, and are there any noteworthy trends or recent changes?`;
+  setQ(q);
+  go();
+}
+
+// Entry point 1: URL param
+(function () {
+  const cubeName = new URLSearchParams(window.location.search).get("cube");
+  if (!cubeName) return;
+  setTimeout(() => _arcOpenCube(cubeName), 400);
+})();
+
+// Entry point 2: postMessage from Arc (tab already open, new cube selected)
+window.addEventListener("message", function (event) {
+  if (!event.data || event.data.type !== "arc:openCube") return;
+  _arcOpenCube(event.data.cube);
+});
+
+// ── Event delegation for dynamically rendered content ─────────────────────────
+
+document.getElementById("out")?.addEventListener("click", event => {
+  const btn = event.target.closest("[data-action='download-excel']");
+  if (!btn) return;
+  const msgId = btn.dataset.msgId;
+  const srcIdx = Number(btn.dataset.srcIdx);
+  if (msgId) downloadExcel(msgId, srcIdx);
+});
+
+document.getElementById("historyList")?.addEventListener("click", event => {
+  const btn = event.target.closest("[data-action='open-history']");
+  if (!btn) return;
+  const id = btn.dataset.id;
+  if (id) openHistory(id);
+});

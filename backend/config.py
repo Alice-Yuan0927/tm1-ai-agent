@@ -1,13 +1,21 @@
 import json
+import logging
 import os
-import tempfile
 import threading
 from pathlib import Path
+
+try:
+    from .util.io import atomic_write_json
+except ImportError:  # Allows tests to load this file directly by path.
+    from backend.util.io import atomic_write_json
+
+_log = logging.getLogger(__name__)
 
 
 BASE_DIR = Path(__file__).resolve().parent
 ENV_PATH = BASE_DIR.parent / ".env"
-RUNTIME_DIR = BASE_DIR / "runtime"
+DATA_DIR = BASE_DIR / "data"
+RUNTIME_DIR = DATA_DIR / "runtime"
 TM1_CONFIG_PATH = RUNTIME_DIR / "tm1_config.json"
 LLM_CONFIG_PATH = RUNTIME_DIR / "llm_config.json"
 LLM_MODELS_PATH = RUNTIME_DIR / "llm_models.json"
@@ -70,6 +78,22 @@ def env_float(name: str, default: float) -> float:
         raise RuntimeError(f"{name} must be a number") from exc
 
 
+def build_tm1_config(values: dict[str, object]) -> dict:
+    config = {
+        "address": str(values.get("address", "localhost")).strip() or "localhost",
+        "port": int(values.get("port", 9510)),
+        "user": str(values.get("user", "admin")).strip() or "admin",
+        "password": str(values.get("password", "")),
+        "ssl": bool(values.get("ssl", False)),
+        "async_requests_mode": bool(values.get("async_requests_mode", False)),
+        "verify": bool(values.get("verify", False)),
+    }
+    namespace = str(values.get("namespace", "")).strip()
+    if namespace and namespace.lower() not in {"none", "null", "false"}:
+        config["namespace"] = namespace
+    return config
+
+
 def _default_tm1_config_from_env() -> dict:
     config = {
         "address": os.environ.get("TM1_ADDRESS", "localhost"),
@@ -92,12 +116,25 @@ def _load_tm1_config() -> dict:
     if TM1_CONFIG_PATH.exists():
         try:
             return build_tm1_config(json.loads(TM1_CONFIG_PATH.read_text(encoding="utf-8")))
-        except Exception:
-            pass
+        except Exception as exc:
+            _log.warning("TM1 config file unreadable, falling back to env: %s", exc)
     return _default_tm1_config_from_env()
 
 
 TM1_CONFIG = _load_tm1_config()
+
+
+def build_llm_config(values: dict[str, object]) -> dict:
+    config = {
+        "provider": str(values.get("provider", "openai")).strip().lower() or "openai",
+        "model": str(values.get("model", "")).strip(),
+    }
+    for key, default in DEFAULT_LLM_TEMPERATURES.items():
+        try:
+            config[key] = float(values.get(key, default))
+        except (TypeError, ValueError):
+            config[key] = default
+    return config
 
 
 def _default_llm_config_from_env() -> dict:
@@ -121,38 +158,9 @@ def _load_llm_config() -> dict:
         try:
             loaded = json.loads(LLM_CONFIG_PATH.read_text(encoding="utf-8"))
             return build_llm_config(loaded)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log.warning("LLM config file unreadable, falling back to env: %s", exc)
     return _default_llm_config_from_env()
-
-
-def build_tm1_config(values: dict[str, object]) -> dict:
-    config = {
-        "address": str(values.get("address", "localhost")).strip() or "localhost",
-        "port": int(values.get("port", 9510)),
-        "user": str(values.get("user", "admin")).strip() or "admin",
-        "password": str(values.get("password", "")),
-        "ssl": bool(values.get("ssl", False)),
-        "async_requests_mode": bool(values.get("async_requests_mode", False)),
-        "verify": bool(values.get("verify", False)),
-    }
-    namespace = str(values.get("namespace", "")).strip()
-    if namespace and namespace.lower() not in {"none", "null", "false"}:
-        config["namespace"] = namespace
-    return config
-
-
-def build_llm_config(values: dict[str, object]) -> dict:
-    config = {
-        "provider": str(values.get("provider", "openai")).strip().lower() or "openai",
-        "model": str(values.get("model", "")).strip(),
-    }
-    for key, default in DEFAULT_LLM_TEMPERATURES.items():
-        try:
-            config[key] = float(values.get(key, default))
-        except (TypeError, ValueError):
-            config[key] = default
-    return config
 
 
 LLM_CONFIG = _load_llm_config()
@@ -192,7 +200,7 @@ def update_tm1_config(values: dict[str, object]) -> dict:
         "suggestions_temperature": values.get("suggestions_temperature", DEFAULT_LLM_TEMPERATURES["suggestions_temperature"]),
     })
     tm1_values = dict(values)
-    if not str(tm1_values.get("password", "")):
+    if "password" not in tm1_values:
         tm1_values["password"] = TM1_CONFIG.get("password", "")
     config = build_tm1_config(tm1_values)
     with _config_lock:
@@ -205,34 +213,23 @@ def update_tm1_config(values: dict[str, object]) -> dict:
     return public_tm1_config()
 
 
-def _atomic_write(path: Path, content: str) -> None:
-    """Write content to path atomically via a temp file + os.replace."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(content)
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-
-
 def _write_tm1_config(config: dict) -> None:
-    _atomic_write(
-        TM1_CONFIG_PATH,
-        json.dumps(build_tm1_config(config), ensure_ascii=False, indent=2) + "\n",
-    )
+    atomic_write_json(TM1_CONFIG_PATH, build_tm1_config(config))
 
 
 def _write_llm_config(config: dict) -> None:
-    _atomic_write(
-        LLM_CONFIG_PATH,
-        json.dumps(build_llm_config(config), ensure_ascii=False, indent=2) + "\n",
-    )
+    atomic_write_json(LLM_CONFIG_PATH, build_llm_config(config))
+
+
+def get_tm1_config() -> dict:
+    """Return a snapshot copy of the current TM1 connection config.
+
+    Always call this instead of reading TM1_CONFIG directly — callers
+    that capture the dict reference will miss live updates from
+    update_tm1_config().
+    """
+    with _config_lock:
+        return dict(TM1_CONFIG)
 
 
 def get_llm_model() -> str:
@@ -291,4 +288,54 @@ CUBE_SELECT_MAX_TOKENS = env_int("CUBE_SELECT_MAX_TOKENS", 700)
 ANALYSIS_MAX_TOKENS = env_int("ANALYSIS_MAX_TOKENS", 1800)
 
 # Semantic profile generation: compact JSON mapping schema terms to business language.
-SEMANTIC_PROFILE_MAX_TOKENS = env_int("SEMANTIC_PROFILE_MAX_TOKENS", 6000)
+SEMANTIC_PROFILE_MAX_TOKENS = env_int("SEMANTIC_PROFILE_MAX_TOKENS", 12000)
+
+# ── Conversation context window ───────────────────────────────────────────────
+HISTORY_WINDOW = env_int("HISTORY_WINDOW", 4)
+HISTORY_ANALYSIS_MAX_CHARS = env_int("HISTORY_ANALYSIS_MAX_CHARS", 800)
+
+# ── MDX execution + repair loop ───────────────────────────────────────────────
+MAX_MDX_ATTEMPTS = env_int("MAX_MDX_ATTEMPTS", 3)
+
+# ── Preview limits (rows actually rendered in the UI) ─────────────────────────
+PREVIEW_ROW_LIMIT = env_int("PREVIEW_ROW_LIMIT", 15)
+PREVIEW_COLUMN_LIMIT = env_int("PREVIEW_COLUMN_LIMIT", 15)
+
+# ── Member grounding (SQL-side caps) ──────────────────────────────────────────
+GROUNDED_MEMBER_LIMIT = env_int("GROUNDED_MEMBER_LIMIT", 40)
+GROUNDED_MEMBER_PER_DIM = env_int("GROUNDED_MEMBER_PER_DIM", 5)
+
+# ── Embeddings ───────────────────────────────────────────────────────────────
+EMBEDDING_BATCH_SIZE = env_int("EMBEDDING_BATCH_SIZE", 500)
+
+# ── Cube scope picker ─────────────────────────────────────────────────────────
+CUBE_SELECT_LIMIT_AUTO = env_int("CUBE_SELECT_LIMIT_AUTO", 3)
+CUBE_SELECT_LIMIT_MANUAL = env_int("CUBE_SELECT_LIMIT_MANUAL", 10)
+
+# ── Cube context for selection (compact dim sampling) ─────────────────────────
+CUBE_CONTEXT_ELEMENTS_PER_DIM = env_int("CUBE_CONTEXT_ELEMENTS_PER_DIM", 12)
+CUBE_CONTEXT_MEASURE_LIMIT = env_int("CUBE_CONTEXT_MEASURE_LIMIT", 25)
+CUBE_CONTEXT_ATTR_LIMIT = env_int("CUBE_CONTEXT_ATTR_LIMIT", 25)
+
+# ── TM1 system cube (Sys Parameter) ──────────────────────────────────────────
+# Standard TM1 cube that stores current-period values. Override via env if your
+# model uses a different cube name (e.g. "System Parameters").
+SYS_PARAMETER_CUBE = os.environ.get("TM1_SYS_PARAMETER_CUBE", "Sys Parameter")
+# Element names inside that cube that map to current period values.
+SYS_PARAMETER_PARAMS = [
+    os.environ.get("TM1_SYS_PARAM_YEAR",          "Current Actual Year"),
+    os.environ.get("TM1_SYS_PARAM_MONTH",         "Current Actual Month"),
+    os.environ.get("TM1_SYS_PARAM_DAY",           "Current Actual Day in Month"),
+    os.environ.get("TM1_SYS_PARAM_WEEK",          "Current Actual Week"),
+    os.environ.get("TM1_SYS_PARAM_FORECAST_YEAR", "Current Forecast Year"),
+]
+
+# ── Currency fallback codes ───────────────────────────────────────────────────
+# When the user asks for "parent / consolidated" currency without naming one,
+# the planner tries these ISO codes in order against the model's currency dim.
+# Override as a comma-separated list via env (e.g. "EUR,GBP,CHF").
+PARENT_CURRENCY_FALLBACKS: list[str] = [
+    c.strip()
+    for c in os.environ.get("PARENT_CURRENCY_FALLBACKS", "USD,EUR,GBP").split(",")
+    if c.strip()
+]

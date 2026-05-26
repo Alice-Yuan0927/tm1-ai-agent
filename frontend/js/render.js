@@ -27,6 +27,14 @@ function skeleton(question = "") {
         <span>Preparing the financial response</span>
       </div>
     </div>
+    <div id="agent-live-status" class="mt-4 hidden text-[12px] italic text-cw-sub">
+      <span class="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-cw-blue"></span>
+      <span data-live-text></span>
+    </div>
+    <details class="mt-2 text-[11px] text-cw-sub">
+      <summary class="cursor-pointer select-none opacity-70 hover:opacity-100">Agent tool calls</summary>
+      <ul id="agent-tool-history" class="mt-2 space-y-1 pl-4 font-mono"></ul>
+    </details>
   </div>`;
 }
 
@@ -54,7 +62,9 @@ function _sourceCardsHtml(sources, reasoning, skippedSources) {
       </div>
       <div class="mb-1 font-mono text-[12.5px] font-medium text-cw-blue">${esc(source.cube)}</div>
       <div class="text-[12px] leading-5 text-cw-sub">${esc(source.reasoning || "")}</div>
+      ${_toolTraceHtml(source.mdx_attempts)}
       ${_planAssumptionsHtml(source.plan)}
+      ${_ragFeedbackHtml(source)}
     </div>`).join("");
 
   const skippedNotice = skippedSources.length
@@ -72,6 +82,54 @@ function _sourceCardsHtml(sources, reasoning, skippedSources) {
     <div class="mt-3 rounded-lg border border-cw-blueMid bg-cw-blueLite px-4 py-3 text-[13px] leading-relaxed text-cw-sub">${esc(reasoning)}</div>
     ${skippedNotice}`;
 }
+
+function _toolTraceHtml(attempts) {
+  if (!Array.isArray(attempts) || !attempts.length) return "";
+  const items = attempts.slice(0, 8).map(raw => {
+    const text = String(raw || "");
+    const [tool, ...rest] = text.split(":");
+    const detail = rest.join(":").trim();
+    return `<li class="flex min-w-0 items-start gap-2">
+      <span class="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-violet-500 text-[9px] text-white">
+        <i class="fa-solid fa-check"></i>
+      </span>
+      <span class="min-w-0">
+        <span class="font-medium text-cw-text">Ran ${esc(tool.trim() || "tool")}</span>
+        ${detail ? `<span class="ml-1 break-words text-cw-muted">${esc(detail.slice(0, 160))}</span>` : ""}
+      </span>
+    </li>`;
+  }).join("");
+  return `<details class="mt-3 rounded-md border border-violet-100 bg-violet-50/60 px-3 py-2 text-[11px] leading-5 text-cw-sub">
+    <summary class="cursor-pointer font-medium text-cw-text">Tool trace</summary>
+    <ul class="mt-2 space-y-1.5">${items}</ul>
+  </details>`;
+}
+
+function _ragFeedbackHtml(source) {
+  const cube = source.cube || "";
+  const mdx = source.generated_mdx || "";
+  const rows = source.data_row_count || 0;
+  if (!cube || !mdx) return "";
+  // Pass question via data attribute on the wrapping article (looked up at click time).
+  return `
+    <div class="mt-3 flex items-center justify-end gap-2 border-t border-cw-borderLow pt-2 text-[11px] text-cw-muted"
+         data-rag-feedback
+         data-cube="${esc(cube)}"
+         data-mdx="${esc(mdx)}"
+         data-row-count="${rows}">
+      <span class="mr-1">Was this answer right?</span>
+      <button type="button" data-rag-action="save"
+        class="inline-flex items-center gap-1 rounded-md border border-cw-borderLow bg-white px-2 py-0.5 transition hover:border-green-400 hover:text-green-700">
+        <i class="fa-regular fa-thumbs-up"></i><span>Save</span>
+      </button>
+      <button type="button" data-rag-action="forget"
+        class="inline-flex items-center gap-1 rounded-md border border-cw-borderLow bg-white px-2 py-0.5 transition hover:border-red-400 hover:text-red-700">
+        <i class="fa-regular fa-thumbs-down"></i><span>Wrong — forget</span>
+      </button>
+      <span data-rag-status class="ml-2 hidden italic"></span>
+    </div>`;
+}
+
 
 function _planAssumptionsHtml(plan) {
   if (!plan || !Array.isArray(plan.assumptions) || !plan.assumptions.length) return "";
@@ -93,23 +151,23 @@ function _planAssumptionsHtml(plan) {
 function _skippedSourceHtml(source, index) {
   const attempts = Array.isArray(source.mdx_attempts) && source.mdx_attempts.length
     ? `<details class="mt-2"><summary class="cursor-pointer font-medium">Repair attempts</summary>
-        <pre class="mt-1 max-h-44 overflow-auto whitespace-pre-wrap rounded-md bg-white/80 p-2 font-mono text-[11px] text-amber-900">${esc(source.mdx_attempts.join("\n"))}</pre>
+        <pre class="mt-1 max-h-44 max-w-full overflow-auto whitespace-pre-wrap break-all rounded-md bg-white/80 p-2 font-mono text-[11px] text-amber-900">${esc(source.mdx_attempts.join("\n"))}</pre>
       </details>`
     : "";
   const mdx = source.generated_mdx
     ? `<details class="mt-2"><summary class="cursor-pointer font-medium">Show MDX</summary>
-        <pre class="mt-1 max-h-56 overflow-auto whitespace-pre-wrap rounded-md bg-white/80 p-2 font-mono text-[11px] text-amber-900">${esc(source.generated_mdx)}</pre>
+        <pre class="mt-1 max-h-56 max-w-full overflow-auto whitespace-pre-wrap break-all rounded-md bg-white/80 p-2 font-mono text-[11px] text-amber-900">${esc(source.generated_mdx)}</pre>
       </details>`
-    : `<div class="mt-2 rounded-md bg-white/70 p-2 font-mono text-[11px] text-amber-700">No MDX generated for this source.</div>`;
-  return `<div class="rounded-md border border-amber-200 bg-white/70 p-3">
-    <div class="flex items-start justify-between gap-3">
-      <div>
+    : `<div class="mt-2 max-w-full break-all rounded-md bg-white/70 p-2 font-mono text-[11px] text-amber-700">No MDX generated for this source.</div>`;
+  return `<div class="min-w-0 rounded-md border border-amber-200 bg-white/70 p-3">
+    <div class="flex min-w-0 items-start justify-between gap-3">
+      <div class="min-w-0">
         <div class="text-[10px] font-semibold uppercase tracking-[0.08em] text-amber-600">Skipped source ${index + 1}</div>
-        <div class="mt-0.5 font-mono text-[12px] font-medium text-amber-900">${esc(source.cube || "")}</div>
+        <div class="mt-0.5 break-words font-mono text-[12px] font-medium text-amber-900">${esc(source.cube || "")}</div>
       </div>
-      <span class="shrink-0 rounded-full border border-amber-300 bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700">${esc(source.status || "skipped")}</span>
+      <span class="min-w-0 max-w-[70%] rounded-md border border-amber-300 bg-amber-100 px-2 py-0.5 text-left text-[10px] font-semibold leading-4 text-amber-700 break-all">${esc(source.status || "skipped")}</span>
     </div>
-    ${source.reasoning ? `<div class="mt-2 text-[11px] text-amber-700">${esc(source.reasoning)}</div>` : ""}
+    ${source.reasoning ? `<div class="mt-2 break-words text-[11px] text-amber-700">${esc(source.reasoning)}</div>` : ""}
     ${mdx}
     ${attempts}
   </div>`;
@@ -125,7 +183,7 @@ function _rowLabel(n) {
   return n === 1 ? "1 row" : `${Number(n).toLocaleString()} rows`;
 }
 
-function _tableSectionsHtml(sources, msgIdx) {
+function _tableSectionsHtml(sources, msgId) {
   return sources.map((source, index) => {
     const chartId   = `chart-${Date.now()}-${index}`;
     const total     = source.data_row_count || 0;
@@ -133,8 +191,8 @@ function _tableSectionsHtml(sources, msgIdx) {
     const previewText = preview >= total
       ? _rowLabel(total)
       : `${_rowLabel(preview)} of ${_rowLabel(total)}`;
-    const csvBtn = msgIdx != null
-      ? `<button type="button" data-xlsx="${msgIdx}-${index}" onclick="downloadExcel(${msgIdx},${index})"
+    const csvBtn = msgId != null
+      ? `<button type="button" data-action="download-excel" data-msg-id="${esc(msgId)}" data-src-idx="${index}"
            class="flex items-center gap-1 rounded-md border border-green-600 bg-white px-2 py-0.5 text-[11px] text-green-600 transition hover:bg-green-50">
            <i class="fa-solid fa-file-excel text-[9px]"></i> Download Excel
          </button>`
@@ -184,7 +242,7 @@ function streamingArticle(event, question) {
   </div>`;
 }
 
-function renderSingleMessage(data, msgIdx) {
+function renderSingleMessage(data) {
   if (data.type === "clarification") {
     return `<div class="mb-8 w-full">
       <div class="flex justify-end mb-3">
@@ -232,7 +290,7 @@ function renderSingleMessage(data, msgIdx) {
       </section>
       <section class="mb-5">
         <h2 class="mb-3 text-[17px] font-semibold text-cw-text">Data retrieved from TM1</h2>
-        ${_tableSectionsHtml(sources, msgIdx)}
+        ${_tableSectionsHtml(sources, data._id ?? null)}
       </section>
       <section>
         <div class="text-[15px] leading-8 text-cw-sub [&_strong]:font-semibold [&_strong]:text-cw-text [&_em]:italic">${renderMarkdown(data.analysis)}</div>
@@ -247,8 +305,9 @@ function renderSingleMessage(data, msgIdx) {
 function renderConversation() {
   setChatMode(true);
   updateShareStatus("");
-  document.getElementById("out").innerHTML = currentMessages.map((msg, i) => renderSingleMessage(msg, i)).join("");
+  document.getElementById("out").innerHTML = currentMessages.map(msg => renderSingleMessage(msg)).join("");
   bindFollowUpButtons();
+  bindRagFeedback();
   initCharts();
 }
 
@@ -260,7 +319,60 @@ function bindFollowUpButtons() {
   });
 }
 
+function bindRagFeedback() {
+  document.querySelectorAll("[data-rag-feedback]").forEach(container => {
+    if (container.dataset.boundRag === "true") return;
+    container.dataset.boundRag = "true";
+    const cube = container.dataset.cube || "";
+    const mdx = container.dataset.mdx || "";
+    const rowCount = parseInt(container.dataset.rowCount || "0", 10) || 0;
+    const statusEl = container.querySelector("[data-rag-status]");
+    const question = container.closest("article")?.previousElementSibling?.querySelector("div")?.textContent
+      || container.closest("[data-question]")?.dataset.question
+      || "";
+
+    container.querySelectorAll("[data-rag-action]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const action = btn.dataset.ragAction;
+        const url = action === "save" ? "/api/rag/save" : "/api/rag/forget";
+        const body = action === "save"
+          ? { question, cube, mdx, row_count: rowCount }
+          : { cube, mdx };
+        btn.disabled = true;
+        if (statusEl) {
+          statusEl.classList.remove("hidden");
+          statusEl.textContent = action === "save" ? "Saving…" : "Removing…";
+        }
+        try {
+          const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = await res.json();
+          if (statusEl) {
+            statusEl.textContent = action === "save"
+              ? "Saved to knowledge base ✓"
+              : `Removed ${data.removed ?? 0} entr${(data.removed ?? 0) === 1 ? "y" : "ies"} ✓`;
+            statusEl.classList.remove("italic");
+            statusEl.classList.add("text-green-700");
+          }
+          container.querySelectorAll("[data-rag-action]").forEach(b => b.disabled = true);
+        } catch (err) {
+          if (statusEl) {
+            statusEl.textContent = "Failed — try again";
+            statusEl.classList.add("text-red-600");
+          }
+          btn.disabled = false;
+        }
+      });
+    });
+  });
+}
+
 function render(data) {
+  if (!data._id) data._id = newId();
   currentMessages = [data];
   currentResult = data;
   renderConversation();
