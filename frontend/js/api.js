@@ -98,6 +98,7 @@ async function go(overrideOptions = {}) {
           })),
         })),
         selected_cubes: scope,
+        mode: typeof getRequestMode === "function" ? getRequestMode() : "analyst",
       }),
       signal: abortController.signal,
     });

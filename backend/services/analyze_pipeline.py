@@ -159,15 +159,22 @@ def analyze_sse_gen(req: QuestionRequest, request: Request | None = None):
         return
 
     # Stage 1: Deterministic early clarification (year/scenario/unclear query).
-    clarification = _early_clarification(question, req.history, model_profile)
-    if clarification:
-        yield _evt({"type": "done", "data": {
-            "success": True, "type": "clarification",
-            "question": question, "analysis": clarification,
-        }})
-        return
+    # Developer mode skips this entirely — it's tuned for data-fetch questions,
+    # not for "write a TI process / rule / feeder" requests.
+    mode = req.mode or "analyst"
+    if mode != "developer":
+        clarification = _early_clarification(question, req.history, model_profile)
+        if clarification:
+            yield _evt({"type": "done", "data": {
+                "success": True, "type": "clarification",
+                "question": question, "analysis": clarification,
+            }})
+            return
 
-    effective_question = effective_question_from_history(question, req.history)
+    effective_question = (
+        question if mode == "developer"
+        else effective_question_from_history(question, req.history)
+    )
 
     yield _evt({"type": "step", "step": 1})
 
@@ -180,6 +187,7 @@ def analyze_sse_gen(req: QuestionRequest, request: Request | None = None):
         req.history,
         model_profile,
         selected_cubes=req.selected_cubes or None,
+        mode=mode,
     ):
         if _client_disconnected(request):
             return

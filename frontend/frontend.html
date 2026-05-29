@@ -266,6 +266,13 @@
             <span id="cubeScopeLabel">Cubes</span>
             <span id="cubeScopeBadge" class="hidden h-4 min-w-[16px] items-center justify-center rounded-full bg-cw-blue px-1 text-[10px] font-semibold text-white">0</span>
           </button>
+          <button type="button" id="devModeBtn"
+            class="relative flex h-7 items-center gap-1.5 rounded-full border border-cw-border bg-white px-2.5 text-[11px] font-medium text-cw-sub transition hover:border-cw-blueMid hover:bg-cw-blueLite hover:text-cw-blue"
+            aria-label="Toggle developer mode" aria-pressed="false"
+            title="Developer mode — generate TI processes, rules and feeders. Output is review-only; nothing executes against TM1.">
+            <i class="fa-solid fa-screwdriver-wrench text-[12px]"></i>
+            <span id="devModeLabel">Developer</span>
+          </button>
           <div class="flex flex-wrap items-center gap-2" id="suggestedContent">
             <span class="shrink-0 text-xs text-cw-muted">Suggested:</span>
             <span class="text-xs text-cw-muted italic" id="suggestedLoading">Loading…</span>
