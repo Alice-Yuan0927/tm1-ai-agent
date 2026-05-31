@@ -111,9 +111,16 @@ Reply with ONLY a JSON array of 3 strings, no markdown, no extra text:
         if isinstance(result, list) and len(result) >= 3:
             return [str(s) for s in result[:3]]
     except Exception as exc:
-        _log.debug("homepage suggestion generation failed: %s", exc)
+        _log.warning("homepage suggestion generation failed: %s", exc)
+    names = [c.get("cube", "") for c in cubes[:3] if c.get("cube")]
+    if len(names) >= 2:
+        return [
+            f"Show me data from {names[0]}",
+            f"Summarize {names[1]}",
+            f"What are the key figures in {names[min(2, len(names) - 1)]}?",
+        ]
     return [
-        "Show me a cost summary by department",
-        "What is the headcount movement this quarter?",
-        "Compare actuals vs budget by cost center",
+        "What data is available in this model?",
+        "Show me an overview of the cubes",
+        "What are the key metrics here?",
     ]

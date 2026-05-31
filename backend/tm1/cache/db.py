@@ -32,10 +32,13 @@ def qmarks(n: int) -> str:
 
 _ALLOWED_MIGRATION_TABLES = frozenset(
     {"cubes", "dim_in_cube", "elements", "element_edges",
-     "dim_attributes", "element_aliases", "element_attribute_values", "member_search"}
+     "dim_attributes", "element_aliases", "element_attribute_values", "member_search",
+     "cube_relationships", "process_cube_links"}
 )
 
 _SCHEMA_DATA_TABLES = (
+    "process_cube_links",
+    "cube_relationships",
     "cube_summaries",
     "element_embeddings",
     "member_search",
@@ -185,6 +188,39 @@ def init_schema_db() -> None:
             default_filters  TEXT DEFAULT '{}',
             generated_at     TEXT DEFAULT (datetime('now'))
         );
+
+        CREATE TABLE IF NOT EXISTS cube_relationships (
+            from_cube         TEXT NOT NULL,
+            to_cube           TEXT NOT NULL,
+            relationship_type TEXT NOT NULL,
+            source_name       TEXT DEFAULT '',
+            snippet           TEXT DEFAULT '',
+            synced_at         TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (from_cube, to_cube, relationship_type, source_name, snippet)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_cube_relationships_from
+            ON cube_relationships (from_cube);
+
+        CREATE INDEX IF NOT EXISTS idx_cube_relationships_to
+            ON cube_relationships (to_cube);
+
+        CREATE TABLE IF NOT EXISTS process_cube_links (
+            process_name    TEXT NOT NULL,
+            cube_name       TEXT NOT NULL,
+            role            TEXT NOT NULL,
+            datasource_type TEXT DEFAULT '',
+            object_name     TEXT DEFAULT '',
+            snippet         TEXT DEFAULT '',
+            synced_at       TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (process_name, cube_name, role, object_name, snippet)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_process_cube_links_cube
+            ON process_cube_links (cube_name);
+
+        CREATE INDEX IF NOT EXISTS idx_process_cube_links_process
+            ON process_cube_links (process_name);
 
         CREATE TABLE IF NOT EXISTS cache_meta (
             key        TEXT PRIMARY KEY,

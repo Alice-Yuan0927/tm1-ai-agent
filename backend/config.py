@@ -284,8 +284,11 @@ MDX_MAX_TOKENS = env_int("MDX_MAX_TOKENS", 4096)
 # Cube selection: compact JSON with 2-3 cube names plus short reasons.
 CUBE_SELECT_MAX_TOKENS = env_int("CUBE_SELECT_MAX_TOKENS", 700)
 
-# Financial analysis: narrative text + SUGGESTIONS JSON array.
-ANALYSIS_MAX_TOKENS = env_int("ANALYSIS_MAX_TOKENS", 1800)
+# Financial analysis: narrative text + SUGGESTIONS JSON array. Must be high
+# enough that a full statement walk-through (e.g. a P&L with per-line expense
+# commentary) plus the trailing SUGGESTIONS JSON fits without the model being
+# cut off mid-sentence. Lower it via env on plans with tight tokens-per-minute.
+ANALYSIS_MAX_TOKENS = env_int("ANALYSIS_MAX_TOKENS", 4000)
 
 # Semantic profile generation: compact JSON mapping schema terms to business language.
 SEMANTIC_PROFILE_MAX_TOKENS = env_int("SEMANTIC_PROFILE_MAX_TOKENS", 12000)

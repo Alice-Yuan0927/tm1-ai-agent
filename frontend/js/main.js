@@ -473,9 +473,8 @@ async function fetchSuggestions() {
     const container = document.getElementById("suggestedContent");
     const loading   = document.getElementById("suggestedLoading");
     if (!container || !Array.isArray(suggestions)) return;
-    // Remove loading text and any previously rendered pills
     loading?.remove();
-    container.querySelectorAll("button.pill").forEach(b => b.remove());
+    container.querySelectorAll("button").forEach(b => b.remove());
     suggestions.forEach(q => {
       const btn = document.createElement("button");
       btn.type = "button";

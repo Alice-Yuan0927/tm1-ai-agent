@@ -15,115 +15,7 @@
 </head>
 <body class="min-h-screen bg-cw-bg font-sans text-sm leading-relaxed text-cw-text antialiased">
 <main class="flex min-h-screen">
-  <aside class="sticky top-0 flex h-screen w-[260px] shrink-0 flex-col overflow-hidden bg-white transition-all duration-200" id="appSidebar">
-    <div class="flex h-16 items-center justify-center gap-3 px-4" id="sidebarHeader">
-      <button type="button" class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition hover:bg-cw-bg" id="sidebarToggle" aria-label="Toggle sidebar">
-        <img src="assets/logo.svg" class="h-6 w-6 rounded-md" alt="Cubewise" />
-      </button>
-      <div class="sidebar-expanded min-w-0">
-        <div class="truncate text-[15px] font-bold text-cw-text">cubewise</div>
-        <div class="truncate text-[11px] text-cw-muted">TM1 AI Analyst</div>
-      </div>
-      <button type="button" class="sidebar-expanded ml-auto flex h-8 w-8 items-center justify-center rounded-lg text-cw-muted transition hover:bg-cw-bg hover:text-cw-text" id="collapseSidebarBtn" aria-label="Collapse sidebar">
-        <i class="fa-solid fa-angles-left"></i>
-      </button>
-    </div>
-
-    <div class="sidebar-expanded flex flex-col gap-1 px-3 pb-2">
-      <button type="button" data-mode-btn="chat"
-        class="mode-pill flex min-h-10 items-center gap-3 rounded-lg px-3 text-left text-[13px] font-semibold text-cw-text transition hover:bg-cw-bg">
-        <i class="fa-regular fa-comment w-4 shrink-0 text-center text-[14px]"></i>
-        <span>Chat</span>
-      </button>
-      <button type="button" data-mode-btn="anomaly"
-        class="mode-pill flex min-h-10 items-center gap-3 rounded-lg px-3 text-left text-[13px] font-semibold text-cw-text transition hover:bg-cw-bg">
-        <i class="fa-solid fa-shield-halved w-4 shrink-0 text-center text-[14px]"></i>
-        <span>Anomaly detection</span>
-      </button>
-    </div>
-
-    <div class="sidebar-expanded flex flex-col gap-2 px-3 pb-4" data-mode-panel="chat">
-      <button type="button" class="flex min-h-10 items-center gap-3 rounded-lg px-3 text-left text-[13px] font-semibold text-cw-text transition hover:bg-cw-bg" id="newChatBtn">
-        <i class="fa-regular fa-pen-to-square w-4 shrink-0 text-center text-[16px] text-cw-text"></i>
-        <span class="sidebar-expanded">New chat</span>
-      </button>
-      <label class="sidebar-expanded relative block">
-        <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-[13px] text-cw-muted"></i>
-        <input id="chatSearch" type="search" class="h-10 w-full rounded-lg bg-cw-bg pl-9 pr-3 text-[13px] text-cw-text outline-none transition placeholder:text-cw-muted focus:bg-white focus:ring-2 focus:ring-cw-blue/15" placeholder="Search chats" />
-      </label>
-    </div>
-
-    <div class="sidebar-expanded flex flex-col gap-2 px-3 pb-4" data-mode-panel="anomaly" style="display:none">
-      <button type="button" id="anomalyNewRulesBtn"
-        class="flex min-h-10 items-center gap-3 rounded-lg px-3 text-left text-[13px] font-semibold text-cw-text transition hover:bg-cw-bg">
-        <i class="fa-solid fa-plus w-4 shrink-0 text-center text-[14px]"></i>
-        <span>New rule set</span>
-      </button>
-      <button type="button" id="anomalyNewScanBtn"
-        class="flex min-h-10 items-center gap-3 rounded-lg px-3 text-left text-[13px] font-semibold text-cw-text transition hover:bg-cw-bg">
-        <i class="fa-solid fa-play w-4 shrink-0 text-center text-[14px]"></i>
-        <span>Run scan</span>
-      </button>
-    </div>
-
-    <div class="sidebar-collapsed hidden flex flex-1 flex-col items-center gap-2 px-1 pt-4">
-      <button type="button" data-mode-btn="chat"
-        class="flex h-10 w-10 items-center justify-center rounded-lg text-[15px] text-cw-text transition hover:bg-cw-bg" aria-label="Chat mode">
-        <i class="fa-regular fa-comment"></i>
-      </button>
-      <button type="button" data-mode-btn="anomaly"
-        class="flex h-10 w-10 items-center justify-center rounded-lg text-[15px] text-cw-text transition hover:bg-cw-bg" aria-label="Anomaly mode">
-        <i class="fa-solid fa-shield-halved"></i>
-      </button>
-      <div class="my-1 h-px w-6 bg-cw-borderLow"></div>
-      <button type="button" class="flex h-10 w-10 items-center justify-center rounded-lg text-[15px] text-cw-text transition hover:bg-cw-bg" id="newChatRail" aria-label="New chat"><i class="fa-regular fa-pen-to-square"></i></button>
-      <button type="button" class="flex h-10 w-10 items-center justify-center rounded-lg text-[15px] text-cw-text transition hover:bg-cw-bg" id="openSearchRail" aria-label="Open search"><i class="fa-solid fa-magnifying-glass"></i></button>
-      <button type="button" class="flex h-10 w-10 items-center justify-center rounded-lg text-[15px] text-cw-text transition hover:bg-cw-bg" id="openEmailRail" aria-label="Open email records"><i class="fa-regular fa-envelope"></i></button>
-    </div>
-
-    <div class="sidebar-expanded flex min-h-0 flex-1 flex-col" data-mode-panel="chat">
-      <section class="flex min-h-0 flex-1 flex-col px-3" id="chatsSection">
-        <div class="flex items-center gap-2 py-2">
-          <button type="button" class="flex h-6 w-6 items-center justify-center rounded-md text-[11px] text-cw-muted transition hover:bg-cw-bg hover:text-cw-text" id="toggleChatsBtn" aria-expanded="true" aria-controls="historyList">
-            <i class="fa-solid fa-chevron-up"></i>
-          </button>
-          <h2 class="flex-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-cw-muted">Chats</h2>
-          <button type="button" class="text-xs font-medium text-cw-blue hover:text-cw-blueHover" id="clearHistoryBtn">Clear</button>
-        </div>
-        <div class="min-h-0 flex-1 overflow-y-auto pb-3" id="historyList"></div>
-      </section>
-
-      <section class="min-h-0 shrink-0 px-3 pb-3" id="emailSection">
-        <div class="flex items-center gap-2 py-2">
-          <button type="button" class="flex h-6 w-6 items-center justify-center rounded-md text-[11px] text-cw-muted transition hover:bg-cw-bg hover:text-cw-text" id="toggleEmailBtn" aria-expanded="true" aria-controls="emailList">
-            <i class="fa-solid fa-chevron-up"></i>
-          </button>
-          <h2 class="flex-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-cw-muted">Email sent</h2>
-          <button type="button" class="text-xs font-medium text-cw-blue hover:text-cw-blueHover" id="clearEmailBtn">Clear</button>
-        </div>
-        <div class="max-h-[28vh] overflow-y-auto pb-3" id="emailList"></div>
-      </section>
-    </div>
-
-    <div class="sidebar-expanded flex min-h-0 flex-1 flex-col" data-mode-panel="anomaly" style="display:none">
-      <section class="flex min-h-0 flex-1 flex-col px-3" id="anomalyRulesSection">
-        <div class="flex items-center gap-2 py-2">
-          <h2 class="flex-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-cw-muted">Rule sets</h2>
-        </div>
-        <div class="min-h-0 flex-1 overflow-y-auto pb-3" id="anomalyRulesList">
-          <div class="px-3 py-3 text-center text-xs text-cw-muted">Loading…</div>
-        </div>
-      </section>
-      <section class="min-h-0 shrink-0 px-3 pb-3" id="anomalyScansSection">
-        <div class="flex items-center gap-2 py-2">
-          <h2 class="flex-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-cw-muted">Recent scans</h2>
-        </div>
-        <div class="max-h-[28vh] overflow-y-auto pb-3" id="anomalyScansList">
-          <div class="px-3 py-3 text-center text-xs text-cw-muted">No scans yet</div>
-        </div>
-      </section>
-    </div>
-  </aside>
+  {% include "partials/sidebar.html" %}
 
   <section class="relative flex min-w-0 flex-1 items-center justify-center px-6 pb-20 pt-8" id="mainContent">
     <div class="group fixed right-6 top-5 z-40 flex items-center gap-3" id="planningBadge">
@@ -342,115 +234,6 @@
       <section class="flex flex-col gap-5" id="out"></section>
     </div>
 
-    <div class="mx-auto w-full max-w-[1100px]" id="anomalyPanel" data-mode-main="anomaly" style="display:none">
-      <header class="mb-6">
-        <h1 class="text-2xl font-bold leading-tight text-cw-text">Anomaly detection</h1>
-        <p class="mt-1 text-sm text-cw-sub">Define rules, run a scan, review flagged variances, push to Teams.</p>
-      </header>
-
-      <nav class="mb-6 flex items-center gap-1 border-b border-cw-borderLow" id="anomalyTabs">
-        <button type="button" data-anomaly-tab="rules"
-          class="anomaly-tab -mb-px flex items-center gap-2 border-b-2 border-transparent px-4 py-2 text-[13px] font-semibold text-cw-muted transition hover:text-cw-text">
-          <i class="fa-solid fa-list-check text-[12px]"></i><span>1. Rules</span>
-        </button>
-        <button type="button" data-anomaly-tab="scan"
-          class="anomaly-tab -mb-px flex items-center gap-2 border-b-2 border-transparent px-4 py-2 text-[13px] font-semibold text-cw-muted transition hover:text-cw-text">
-          <i class="fa-solid fa-play text-[12px]"></i><span>2. Run scan</span>
-        </button>
-        <button type="button" data-anomaly-tab="review"
-          class="anomaly-tab -mb-px flex items-center gap-2 border-b-2 border-transparent px-4 py-2 text-[13px] font-semibold text-cw-muted transition hover:text-cw-text">
-          <i class="fa-solid fa-magnifying-glass-chart text-[12px]"></i><span>3. Review</span>
-        </button>
-        <button type="button" data-anomaly-tab="push"
-          class="anomaly-tab -mb-px flex items-center gap-2 border-b-2 border-transparent px-4 py-2 text-[13px] font-semibold text-cw-muted transition hover:text-cw-text">
-          <i class="fa-brands fa-microsoft text-[12px]"></i><span>4. Push to Teams</span>
-        </button>
-      </nav>
-
-      <section class="hidden" data-anomaly-view="rules">
-        <div id="anomalyRulesEmpty" class="rounded-xl border border-dashed border-cw-border bg-white p-10 text-center shadow-soft">
-          <i class="fa-solid fa-list-check mb-3 text-2xl text-cw-muted"></i>
-          <div class="text-[13px] font-semibold text-cw-text">No rule set selected</div>
-          <div class="mt-1 text-[12px] text-cw-muted">Pick a rule set on the left, or create one for a cube that doesn't have any yet.</div>
-          <button type="button" id="anomalyEmptyNewBtn"
-            class="mt-4 inline-flex h-9 items-center gap-2 rounded-lg bg-cw-blue px-3 text-[12px] font-semibold text-white shadow-md shadow-cw-blue/25 transition hover:bg-cw-blueHover">
-            <i class="fa-solid fa-plus text-[11px]"></i><span>New rule set</span>
-          </button>
-        </div>
-
-        <div id="anomalyRulesEditor" class="hidden">
-          <div class="mb-4 flex items-center gap-3">
-            <div class="min-w-0 flex-1">
-              <div class="text-[11px] font-semibold uppercase tracking-[0.08em] text-cw-muted">Rule set</div>
-              <div class="truncate text-[18px] font-bold text-cw-text" id="anomalyEditorCube">—</div>
-            </div>
-            <div id="anomalyEditorStatus" class="min-h-4 text-right text-[11px] font-medium text-cw-muted"></div>
-            <button type="button" id="anomalyEditorDelete"
-              class="h-9 rounded-lg border border-red-200 bg-white px-3 text-[12px] font-semibold text-red-600 transition hover:bg-red-50">
-              Delete
-            </button>
-            <button type="button" id="anomalyEditorSave"
-              class="h-9 rounded-lg bg-cw-blue px-4 text-[12px] font-semibold text-white shadow-md shadow-cw-blue/25 transition hover:bg-cw-blueHover disabled:cursor-not-allowed disabled:bg-cw-border disabled:text-cw-muted disabled:shadow-none">
-              Save
-            </button>
-          </div>
-
-          <label class="mb-6 block">
-            <span class="mb-1 block text-[11px] font-medium text-cw-muted">Description (optional)</span>
-            <textarea id="anomalyEditorDescription" rows="2"
-              class="w-full resize-none rounded-lg border border-cw-border bg-white px-3 py-2 text-[12px] outline-none focus:border-cw-blue focus:ring-4 focus:ring-cw-blue/10"
-              placeholder="What this rule set is for"></textarea>
-          </label>
-
-          <section class="mb-6 rounded-xl border border-cw-border bg-white shadow-soft">
-            <header class="flex items-center gap-2 border-b border-cw-borderLow px-5 py-3">
-              <i class="fa-solid fa-shield-check text-[12px] text-cw-blue"></i>
-              <div class="text-[13px] font-semibold text-cw-text">Integrity rules</div>
-              <div class="ml-auto text-[11px] text-cw-muted">Built-in deterministic checks</div>
-            </header>
-            <div id="anomalyIntegrityList" class="divide-y divide-cw-borderLow"></div>
-          </section>
-
-          <section class="rounded-xl border border-cw-border bg-white shadow-soft">
-            <header class="flex items-center gap-2 border-b border-cw-borderLow px-5 py-3">
-              <i class="fa-solid fa-arrows-left-right text-[12px] text-cw-blue"></i>
-              <div class="text-[13px] font-semibold text-cw-text">Variance rules</div>
-              <div class="ml-auto flex items-center gap-2">
-                <button type="button" id="anomalyAddVarianceBtn"
-                  class="h-7 rounded-lg border border-cw-border bg-white px-2.5 text-[11px] font-semibold text-cw-text transition hover:border-cw-blueMid hover:bg-cw-blueLite hover:text-cw-blue">
-                  <i class="fa-solid fa-plus mr-1 text-[10px]"></i>Add variance rule
-                </button>
-              </div>
-            </header>
-            <div id="anomalyVarianceList" class="divide-y divide-cw-borderLow"></div>
-          </section>
-        </div>
-      </section>
-
-      <section class="hidden" data-anomaly-view="scan">
-        <div class="rounded-xl border border-cw-border bg-white p-6 shadow-soft">
-          <div class="text-[13px] font-semibold text-cw-text">Run scan</div>
-          <div class="mt-1 text-[12px] text-cw-muted">Pulls live data, applies the rule set, scores and de-dupes.</div>
-          <div class="mt-6 text-[12px] italic text-cw-muted">Execution wiring lands in Phase 3.</div>
-        </div>
-      </section>
-
-      <section class="hidden" data-anomaly-view="review">
-        <div class="rounded-xl border border-cw-border bg-white p-6 shadow-soft">
-          <div class="text-[13px] font-semibold text-cw-text">Admin review</div>
-          <div class="mt-1 text-[12px] text-cw-muted">Approve, dismiss, or investigate each flag. AI commentary is grounded against source data.</div>
-          <div class="mt-6 text-[12px] italic text-cw-muted">Review board lands in Phase 3.</div>
-        </div>
-      </section>
-
-      <section class="hidden" data-anomaly-view="push">
-        <div class="rounded-xl border border-cw-border bg-white p-6 shadow-soft">
-          <div class="text-[13px] font-semibold text-cw-text">Push to Teams</div>
-          <div class="mt-1 text-[12px] text-cw-muted">Post approved flags to a Teams channel via Incoming Webhook.</div>
-          <div class="mt-6 text-[12px] italic text-cw-muted">Teams integration lands in Phase 5.</div>
-        </div>
-      </section>
-    </div>
   </section>
 
   <div class="hidden w-12 w-[260px]"></div>
@@ -484,30 +267,6 @@
   </div>
 </div>
 
-<div id="anomalyCubePickerPopup"
-  class="fixed z-50 hidden w-[420px] flex-col overflow-hidden rounded-xl border border-cw-border bg-white shadow-soft"
-  style="top: 80px; left: 320px;">
-  <div class="flex items-center justify-between border-b border-cw-borderLow px-3 py-2">
-    <div>
-      <div class="text-[12px] font-semibold text-cw-text">Create rule set for a cube</div>
-      <div class="text-[10px] text-cw-muted">Pick any cube. You can add rules after.</div>
-    </div>
-    <button type="button" id="anomalyCubePickerClose" class="flex h-6 w-6 items-center justify-center rounded-md text-cw-muted transition hover:bg-cw-bg hover:text-cw-text" aria-label="Close cube picker">
-      <i class="fa-solid fa-xmark text-[11px]"></i>
-    </button>
-  </div>
-  <div class="px-3 py-2">
-    <label class="relative block">
-      <i class="fa-solid fa-magnifying-glass absolute left-2.5 top-1/2 -translate-y-1/2 text-[11px] text-cw-muted"></i>
-      <input id="anomalyCubePickerSearch" type="search" placeholder="Search cubes"
-        class="h-8 w-full rounded-lg border border-cw-border bg-white pl-7 pr-2 text-[12px] outline-none focus:border-cw-blue focus:ring-2 focus:ring-cw-blue/10" />
-    </label>
-  </div>
-  <div id="anomalyCubePickerList" class="max-h-[360px] min-h-[120px] overflow-y-auto px-2 pb-2">
-    <div class="px-2 py-3 text-[11px] italic text-cw-muted">Loading cubes…</div>
-  </div>
-</div>
-
 <script src="js/config.js"></script>
 <script src="js/markdown.js"></script>
 <script src="js/charts.js"></script>
@@ -519,7 +278,6 @@
 <script src="js/cubes.js"></script>
 <script src="js/render.js"></script>
 <script src="js/api.js"></script>
-<script src="js/anomaly.js"></script>
 <script src="js/main.js"></script>
 </body>
 </html>

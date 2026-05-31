@@ -1,0 +1,100 @@
+{% set is_chat = active_page == "chat" %}
+{% set is_anomaly = active_page == "anomaly" %}
+<aside class="sticky top-0 flex h-screen w-[260px] shrink-0 flex-col overflow-hidden bg-white font-sans text-sm leading-relaxed text-cw-text transition-all duration-200" id="appSidebar">
+  <div class="flex h-16 items-center justify-center gap-3 px-4" id="sidebarHeader">
+    <button type="button" class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition hover:bg-cw-bg" id="sidebarToggle" aria-label="Toggle sidebar">
+      <img src="assets/logo.svg" class="h-6 w-6 rounded-md" alt="Cubewise" />
+    </button>
+    <div class="sidebar-expanded min-w-0">
+      <div class="truncate text-[15px] font-bold text-cw-text">cubewise</div>
+      <div class="truncate text-[11px] text-cw-muted">TM1 AI Analyst</div>
+    </div>
+    <button type="button" class="sidebar-expanded ml-auto flex h-8 w-8 items-center justify-center rounded-lg text-cw-muted transition hover:bg-cw-bg hover:text-cw-text" id="collapseSidebarBtn" aria-label="Collapse sidebar">
+      <i class="fa-solid fa-angles-left"></i>
+    </button>
+  </div>
+
+  <div class="sidebar-expanded flex flex-col gap-1 px-3 pb-2">
+    <a href="/"
+      class="mode-pill flex min-h-10 items-center gap-3 rounded-lg px-3 text-left text-[13px] font-semibold transition {% if is_chat %}bg-cw-blueLite text-cw-blue{% else %}text-cw-text hover:bg-cw-bg{% endif %}">
+      <i class="fa-regular fa-comment w-4 shrink-0 text-center text-[14px]"></i>
+      <span>Chat</span>
+    </a>
+    <a href="/anomaly.html"
+      class="mode-pill flex min-h-10 items-center gap-3 rounded-lg px-3 text-left text-[13px] font-semibold transition {% if is_anomaly %}bg-cw-blueLite text-cw-blue{% else %}text-cw-text hover:bg-cw-bg{% endif %}">
+      <i class="fa-solid fa-shield-halved w-4 shrink-0 text-center text-[14px]"></i>
+      <span>Anomaly detection</span>
+    </a>
+  </div>
+
+  {% if is_chat %}
+  <div class="sidebar-expanded flex flex-col gap-2 px-3 pb-4" data-mode-panel="chat">
+    <button type="button" class="flex min-h-10 items-center gap-3 rounded-lg px-3 text-left text-[13px] font-semibold text-cw-text transition hover:bg-cw-bg" id="newChatBtn">
+      <i class="fa-regular fa-pen-to-square w-4 shrink-0 text-center text-[16px] text-cw-text"></i>
+      <span class="sidebar-expanded">New chat</span>
+    </button>
+    <label class="sidebar-expanded relative block">
+      <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-[13px] text-cw-muted"></i>
+      <input id="chatSearch" type="search" class="h-10 w-full rounded-lg bg-cw-bg pl-9 pr-3 text-[13px] text-cw-text outline-none transition placeholder:text-cw-muted focus:bg-white focus:ring-2 focus:ring-cw-blue/15" placeholder="Search chats" />
+    </label>
+  </div>
+  {% endif %}
+
+  <div class="sidebar-collapsed hidden flex flex-1 flex-col items-center gap-2 px-1 pt-4">
+    <a href="/"
+      class="flex h-10 w-10 items-center justify-center rounded-lg text-[15px] transition {% if is_chat %}bg-cw-blueLite text-cw-blue{% else %}text-cw-text hover:bg-cw-bg{% endif %}" aria-label="Chat mode">
+      <i class="fa-regular fa-comment"></i>
+    </a>
+    <a href="/anomaly.html"
+      class="flex h-10 w-10 items-center justify-center rounded-lg text-[15px] transition {% if is_anomaly %}bg-cw-blueLite text-cw-blue{% else %}text-cw-text hover:bg-cw-bg{% endif %}" aria-label="Anomaly detection">
+      <i class="fa-solid fa-shield-halved"></i>
+    </a>
+    {% if is_chat %}
+    <div class="my-1 h-px w-6 bg-cw-borderLow"></div>
+    <button type="button" class="flex h-10 w-10 items-center justify-center rounded-lg text-[15px] text-cw-text transition hover:bg-cw-bg" id="newChatRail" aria-label="New chat"><i class="fa-regular fa-pen-to-square"></i></button>
+    <button type="button" class="flex h-10 w-10 items-center justify-center rounded-lg text-[15px] text-cw-text transition hover:bg-cw-bg" id="openSearchRail" aria-label="Open search"><i class="fa-solid fa-magnifying-glass"></i></button>
+    <button type="button" class="flex h-10 w-10 items-center justify-center rounded-lg text-[15px] text-cw-text transition hover:bg-cw-bg" id="openEmailRail" aria-label="Open email records"><i class="fa-regular fa-envelope"></i></button>
+    {% endif %}
+  </div>
+
+  {% if is_chat %}
+  <div class="sidebar-expanded flex min-h-0 flex-1 flex-col" data-mode-panel="chat">
+    <section class="flex min-h-0 flex-1 flex-col px-3" id="chatsSection">
+      <div class="flex items-center gap-2 py-2">
+        <button type="button" class="flex h-6 w-6 items-center justify-center rounded-md text-[11px] text-cw-muted transition hover:bg-cw-bg hover:text-cw-text" id="toggleChatsBtn" aria-expanded="true" aria-controls="historyList">
+          <i class="fa-solid fa-chevron-up"></i>
+        </button>
+        <h2 class="flex-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-cw-muted">Chats</h2>
+        <button type="button" class="text-xs font-medium text-cw-blue hover:text-cw-blueHover" id="clearHistoryBtn">Clear</button>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto pb-3" id="historyList"></div>
+    </section>
+
+    <section class="min-h-0 shrink-0 px-3 pb-3" id="emailSection">
+      <div class="flex items-center gap-2 py-2">
+        <button type="button" class="flex h-6 w-6 items-center justify-center rounded-md text-[11px] text-cw-muted transition hover:bg-cw-bg hover:text-cw-text" id="toggleEmailBtn" aria-expanded="true" aria-controls="emailList">
+          <i class="fa-solid fa-chevron-up"></i>
+        </button>
+        <h2 class="flex-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-cw-muted">Email sent</h2>
+        <button type="button" class="text-xs font-medium text-cw-blue hover:text-cw-blueHover" id="clearEmailBtn">Clear</button>
+      </div>
+      <div class="max-h-[28vh] overflow-y-auto pb-3" id="emailList"></div>
+    </section>
+  </div>
+  {% elif is_anomaly %}
+  <div class="sidebar-expanded flex min-h-0 flex-1 flex-col" data-mode-panel="anomaly">
+    <section class="flex min-h-0 flex-1 flex-col px-3" id="detectionHistorySection">
+      <div class="flex items-center gap-2 py-2">
+        <button type="button" class="flex h-6 w-6 items-center justify-center rounded-md text-[11px] text-cw-muted transition hover:bg-cw-bg hover:text-cw-text" id="toggleDetectionHistoryBtn" aria-expanded="true" aria-controls="detectionHistoryList">
+          <i class="fa-solid fa-chevron-up"></i>
+        </button>
+        <h2 class="flex-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-cw-muted">Detection history</h2>
+        <button type="button" class="text-xs font-medium text-cw-blue hover:text-cw-blueHover" id="clearDetectionHistoryBtn">Clear</button>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto pb-3" id="detectionHistoryList"></div>
+    </section>
+  </div>
+  {% else %}
+  <div class="sidebar-expanded flex-1"></div>
+  {% endif %}
+</aside>

@@ -89,8 +89,19 @@ function _sourceCardsHtml(sources, reasoning, skippedSources) {
       </details>`
     : "";
 
+  // The blue banner repeats the model's overall reasoning. Skip it when it just
+  // echoes a source card's reasoning (the common single-cube case) so the same
+  // "Found data in …" line isn't shown twice.
+  const overall = String(reasoning || "").trim();
+  const sourceReasonings = new Set(
+    sources.map(s => String(s.reasoning || "").trim()).filter(Boolean)
+  );
+  const overallHtml = overall && !sourceReasonings.has(overall)
+    ? `<div class="mt-3 rounded-lg border border-cw-blueMid bg-cw-blueLite px-4 py-3 text-[13px] leading-relaxed text-cw-sub">${esc(overall)}</div>`
+    : "";
+
   return `<div class="grid grid-cols-1 gap-3">${cards}</div>
-    <div class="mt-3 rounded-lg border border-cw-blueMid bg-cw-blueLite px-4 py-3 text-[13px] leading-relaxed text-cw-sub">${esc(reasoning)}</div>
+    ${overallHtml}
     ${skippedNotice}`;
 }
 
