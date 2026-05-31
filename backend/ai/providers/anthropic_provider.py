@@ -3,6 +3,7 @@
 from collections.abc import Iterator
 
 from ...config import get_llm_api_key, get_llm_model
+from . import usage as _usage
 
 
 try:
@@ -27,22 +28,29 @@ class AnthropicProvider:
         return _anthropic_sdk.Anthropic(**kwargs)
 
     def complete(self, prompt: str, *, max_tokens: int, temperature: float) -> str:
+        model = get_llm_model()
         response = self._client().messages.create(
-            model=get_llm_model(),
+            model=model,
             max_tokens=max_tokens,
             temperature=temperature,
             messages=[{"role": "user", "content": prompt}],
         )
+        _usage.record_anthropic(response, model=model, label="completion")
         return "".join(b.text for b in response.content if b.type == "text").strip()
 
     def stream(self, prompt: str, *, max_tokens: int, temperature: float) -> Iterator[str]:
+        model = get_llm_model()
         with self._client().messages.stream(
-            model=get_llm_model(),
+            model=model,
             max_tokens=max_tokens,
             temperature=temperature,
             messages=[{"role": "user", "content": prompt}],
         ) as stream:
             yield from stream.text_stream
+            try:
+                _usage.record_anthropic(stream.get_final_message(), model=model, label="analysis")
+            except Exception:
+                pass
 
     def call_with_tools(
         self,
@@ -61,13 +69,15 @@ class AnthropicProvider:
             }
             for t in tools
         ]
+        model = get_llm_model()
         response = self._client().messages.create(
-            model=get_llm_model(),
+            model=model,
             messages=anthropic_messages,
             tools=anthropic_tools,
             max_tokens=max_tokens,
             temperature=temperature,
         )
+        _usage.record_anthropic(response, model=model, label="agent")
         if response.stop_reason == "tool_use":
             tool_calls = [
                 {"id": b.id, "name": b.name, "args": b.input}

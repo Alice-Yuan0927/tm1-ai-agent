@@ -15,6 +15,7 @@ from anyio import from_thread
 from fastapi import Request
 
 from ..ai.agent import run_agent
+from ..ai.providers import usage as _usage
 from ..ai.intent.clarification import find_clarifications
 from ..ai.intent.layout_followup import effective_question_from_history
 from ..ai.intent.preflight import is_unclear_question
@@ -148,8 +149,36 @@ def _evt(data: dict) -> str:
     return f"data: {_json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+def _flush_usage(totals: dict) -> Iterator[str]:
+    """Emit a `token_usage` event per LLM call recorded since the last flush.
+
+    Mutates `totals` (an accumulator) so the final `done` event can report the
+    request-wide token total alongside the per-call lines streamed live."""
+    for rec in _usage.drain():
+        totals["calls"] += 1
+        totals["input_tokens"] += rec["input_tokens"]
+        totals["output_tokens"] += rec["output_tokens"]
+        totals["total_tokens"] += rec["total_tokens"]
+        yield _evt({
+            "type": "token_usage",
+            "call": totals["calls"],
+            "label": rec["label"],
+            "model": rec["model"],
+            "input_tokens": rec["input_tokens"],
+            "output_tokens": rec["output_tokens"],
+            "total_tokens": rec["total_tokens"],
+            "cumulative_tokens": totals["total_tokens"],
+        })
+
+
 def analyze_sse_gen(req: QuestionRequest, request: Request | None = None):
     """SSE generator for /api/analyze. Yields `data: {...}\\n\\n` strings."""
+    with _usage.collect():
+        yield from _analyze_sse_gen(req, request)
+
+
+def _analyze_sse_gen(req: QuestionRequest, request: Request | None = None):
+    token_totals = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
     question = req.question.strip()
     if _client_disconnected(request):
         return
@@ -164,10 +193,12 @@ def analyze_sse_gen(req: QuestionRequest, request: Request | None = None):
     mode = req.mode or "analyst"
     if mode != "developer":
         clarification = _early_clarification(question, req.history, model_profile)
+        yield from _flush_usage(token_totals)
         if clarification:
             yield _evt({"type": "done", "data": {
                 "success": True, "type": "clarification",
                 "question": question, "analysis": clarification,
+                "token_usage": token_totals,
             }})
             return
 
@@ -193,7 +224,9 @@ def analyze_sse_gen(req: QuestionRequest, request: Request | None = None):
             return
         if kind == "event":
             yield _evt({"type": "agent_step", **payload})
+            yield from _flush_usage(token_totals)
         elif kind == "result":
+            yield from _flush_usage(token_totals)
             agent_result = payload
             break
 
@@ -208,6 +241,7 @@ def analyze_sse_gen(req: QuestionRequest, request: Request | None = None):
         yield _evt({"type": "done", "data": {
             "success": True, "type": "clarification",
             "question": question, "analysis": agent_result.clarification,
+            "token_usage": token_totals,
         }})
         return
 
@@ -256,6 +290,9 @@ def analyze_sse_gen(req: QuestionRequest, request: Request | None = None):
         elif kind == "done":
             full_text = payload
 
+    # Streaming providers only report usage once the stream completes.
+    yield from _flush_usage(token_totals)
+
     analysis, suggestions = _parse_suggestions(full_text)
     first = source_dicts[0]
     for rs, s in zip(response_sources, source_dicts):
@@ -270,4 +307,5 @@ def analyze_sse_gen(req: QuestionRequest, request: Request | None = None):
         "skipped_sources": [],
         "analysis": analysis,
         "suggestions": suggestions,
+        "token_usage": token_totals,
     }})

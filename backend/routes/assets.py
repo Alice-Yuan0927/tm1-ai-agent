@@ -10,6 +10,7 @@ _ALLOWED_JS_ASSETS = frozenset({
     "config.js", "markdown.js", "charts.js", "table.js",
     "store.js", "share.js", "ui.js", "sidebar.js",
     "cubes.js", "render.js", "api.js", "main.js",
+    "anomaly.js",
 })
 
 

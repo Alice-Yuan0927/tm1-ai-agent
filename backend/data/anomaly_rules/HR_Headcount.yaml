@@ -1,0 +1,40 @@
+cube: HR Headcount
+version: 1
+description: |
+  Example rule set for an HR / Headcount cube. Tune thresholds to your
+  materiality bar. Integrity rules are deterministic; variance rules
+  compare the live measure against a reference version.
+
+integrity:
+  - name: negative_values
+    enabled: true
+    columns: [GrossSalary, FTE, Headcount]
+
+  - name: headcount_no_salary
+    enabled: true
+
+  - name: fte_gt_headcount
+    enabled: true
+
+  - name: alloc_not_100pct
+    enabled: false   # turn on once AllocPct column is reliably populated
+    group_by: [Employee]
+
+variance:
+  - name: labor_cost_vs_budget
+    description: Flag cost centers whose actual gross salary diverges from Budget.
+    measure: GrossSalary
+    reference: budget
+    reference_label: Budget
+    rel_pct: 0.15
+    abs_value: 10000
+    group_by: [CostCenter]
+    reason_template: "{CostCenter} gross salary {direction} {rel_delta_pct} ({abs_delta_money}) vs Budget"
+
+  - name: headcount_wow_spike
+    description: Week-over-week headcount jump in any cost center.
+    measure: Headcount
+    reference: prior_week
+    rel_pct: 0.10
+    abs_value: 3
+    group_by: [CostCenter]
