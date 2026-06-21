@@ -196,43 +196,116 @@ Charts are generated from structured preview data:
 | `POST` | `/api/analyze` | SSE stream for the full analysis pipeline |
 | `POST` | `/api/export-excel` | Generate and download an Excel workbook |
 | `POST` | `/api/send-email` | Send analysis result by email via Resend |
+| `GET` | `/api/anomaly/rules` | List all anomaly rules |
+| `GET` | `/api/anomaly/cubes` | List cubes available for anomaly scanning |
+| `GET` | `/api/anomaly/relationships` | Cube/process relationship map |
+| `GET` | `/api/anomaly/rules/{cube}` | Get rules for a specific cube |
+| `PUT` | `/api/anomaly/rules/{cube}` | Update rules for a specific cube |
+| `DELETE` | `/api/anomaly/rules/{cube}` | Delete rules for a specific cube |
+| `GET` | `/api/anomaly/rules/{cube}/reference-elements` | Get reference elements for rule context |
+| `POST` | `/api/anomaly/rules/{cube}/suggest` | AI-generate rule suggestions for a cube |
+| `POST` | `/api/anomaly/scan/{cube}` | Run anomaly scan on a cube |
+| `GET` | `/api/anomaly/scans` | List recent scan results |
+| `POST` | `/api/anomaly/dismiss/{cube}` | Dismiss flagged anomalies for a cube |
+| `POST` | `/api/anomaly/push/teams/{cube}` | Push anomaly report to Microsoft Teams |
 
 ## Project Structure
 
 ```text
 backend/
+  anomaly/                  # Anomaly detection module
+    rules/
+      builtin.py            # Built-in rule definitions
+      loader.py             # YAML rule loader
+      schema.py             # Rule schema validation
+      suggest.py            # AI-powered rule suggestion
+    commentary.py           # Natural-language anomaly commentary
+    detector.py             # Core detection logic
+    flag.py                 # Anomaly flag data structures
+    memory.py               # Anomaly history and memory tracking
+    severity.py             # Severity scoring
+    variance.py             # Variance analysis helpers
   ai/
-    service.py              # OpenAI calls: cube selection, MDX, profile generation, analysis
-    rag.py                  # SQLite FTS5 query history for MDX examples
-  data/model_profiles/
-    default.json            # Generated semantic profile fallback
+    agent/                  # Top-level analysis agent
+      loop.py               # run_agent generator; cube discovery + MDX execution
+      prompt.py             # Agent prompt assembly
+      tools.py              # Agent tool definitions
+    intent/                 # Preflight, clarification, follow-up helpers
+    mdx/                    # MDX generation, normalization, context
+    output/                 # Narrative and profile generation
+    prompts/                # External prompt fragments (mdx_hard_rules.md)
+    providers/              # OpenAI / Anthropic / DeepSeek implementations + usage tracking
+    retrieval/              # Embeddings and past-query RAG store
+    schema/                 # TM1/domain validators and classifiers
+    tools/                  # Agent tool registry; ti_tools.py, preview, element search
+  data/
+    anomaly_rules/          # Per-cube YAML anomaly rule files
+    model_profiles/         # Generated semantic profiles per TM1 model
+  routes/                   # HTTP edge; thin JSON/SSE handlers
+    anomaly.py              # Anomaly scan, flag, rules CRUD, Teams push
+    analyze.py
+    assets.py
+    config.py
+    email.py
+    explain_cell.py
+    export.py
+    health.py
+    rag_feedback.py
+    schema.py
+  services/                 # Request orchestration
+    analyze_pipeline.py     # /api/analyze SSE pipeline
+    cell_explain_service.py
+    embedding_sync.py
+    mdx_execution.py
+    model_profile.py
+    tm1_health.py
   tm1/
-    cache.py                # SQLite schema cache and metadata lookups
-    service.py              # TM1py wrappers, MDX execution, structured previews
-  backend.py                # FastAPI routes and SSE pipeline
-  config.py                 # Env config, TM1 runtime config, limits, temperatures
-  excel_service.py          # Styled Excel export
+    cache/                  # SQLite schema cache package
+      db.py                 # Schema and connection helpers
+      defaults.py
+      member_search.py
+      read.py               # Cache read helpers
+      sync.py               # TM1 → cache synchronisation
+    service.py              # TM1py wrappers and structured previews
+  semantic/                 # Deterministic cube summaries
+  util/                     # Small shared helpers
+  backend.py                # FastAPI app, middleware, route registration, lifespan
+  config.py                 # Env/runtime config and atomic config writes
   email_service.py          # Resend integration with optional Excel attachments
+  excel_service.py          # Styled Excel export
+  llm_models.py             # Provider model catalog and validation
   schemas.py                # Pydantic request models
 
 frontend/
-  frontend.html             # App shell and layout
+  anomaly.html              # Anomaly detection page (served at /anomaly.html)
+  chat.html                 # Main chat/analysis page (served at /)
   assets/
     logo.svg
     block2.png
+  css/
+    anomaly.css             # Anomaly page styles
   js/
-    config.js               # API base URL, localStorage keys, class helpers
-    api.js                  # Analyze SSE and Excel download
-    render.js               # Message/source rendering
-    table.js                # Table rendering
+    anomaly-data.js         # Anomaly data fetching helpers
+    anomaly-drawer.js       # Anomaly detail drawer component
+    anomaly-map.js          # Anomaly cube/dimension map
+    anomaly-scan.js         # Scan trigger and progress
+    anomaly-state.js        # Shared anomaly UI state
+    anomaly.js              # Anomaly page controller
+    anomaly.tailwind.js     # Tailwind theme config for anomaly page
+    api.js                  # Analyze SSE, Excel download, anomaly API calls
     charts.js               # Chart.js rendering and measure splitting
-    store.js                # Browser localStorage
-    share.js                # Email/link sharing
-    ui.js                   # Chat mode and prompt dock
-    sidebar.js              # Sidebar and history UI
+    config.js               # API base URL, localStorage keys, class helpers
     main.js                 # Page init, TM1 status, settings popup, suggestions
     markdown.js             # Markdown/table rendering
-    frontend.tailwind.js    # Tailwind theme config
+    render.js               # Message/source rendering
+    share.js                # Email/link sharing
+    sidebar.js              # Sidebar and history UI
+    store.js                # Browser localStorage
+    table.js                # Table rendering
+    ui.js                   # Chat mode and prompt dock
+    frontend.tailwind.js    # Tailwind theme config for chat page
+  partials/
+    sidebar.html            # Shared sidebar HTML partial
 ```
 
 ## How It Works
