@@ -8,7 +8,21 @@ backend/
   schemas.py                  # request DTOs
   excel_service.py / email_service.py
 
+  anomaly/                    # anomaly detection module
+    rules/
+      builtin.py              # built-in rule definitions
+      loader.py               # YAML rule loader
+      schema.py               # rule schema validation
+      suggest.py              # AI-powered rule suggestion
+    commentary.py             # natural-language anomaly commentary
+    detector.py               # core detection logic
+    flag.py                   # anomaly flag data structures
+    memory.py                 # anomaly history and memory tracking
+    severity.py               # severity scoring
+    variance.py               # variance analysis helpers
+
   routes/                     # HTTP edge; thin JSON/SSE handlers
+    anomaly.py                # anomaly scan, flag, rules CRUD, Teams push
     health.py
     config.py
     schema.py
@@ -40,14 +54,19 @@ backend/
     intent/                   # preflight, clarification, follow-up helpers
     output/                   # narrative/profile generation
     prompts/                  # external prompt fragments
-    providers/                # OpenAI/Anthropic/DeepSeek implementations
+    providers/                # OpenAI/Anthropic/DeepSeek implementations + usage.py (token tracking)
     retrieval/                # embeddings and past-query RAG store
     schema/                   # TM1/domain validators and classifiers
-    tools/                    # agent tool registry and handlers
+    tools/                    # agent tool registry; ti_tools.py, preview, element search
 
   tm1/
     service.py                # live TM1py wrappers and structured previews
-    cache/                    # SQLite schema cache
+    cache/                    # SQLite schema cache package
+      db.py                   # schema and connection helpers
+      defaults.py
+      member_search.py
+      read.py                 # cache read helpers
+      sync.py                 # TM1 → cache synchronisation
 
   semantic/                   # deterministic cube summaries
   util/                       # small shared helpers
