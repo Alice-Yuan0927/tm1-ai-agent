@@ -60,6 +60,10 @@ document.getElementById("cubeScopeBtn")?.addEventListener("click", event => {
   event.stopPropagation();
   toggleCubeScopePopup();
 });
+document.getElementById("devModeBtn")?.addEventListener("click", event => {
+  event.stopPropagation();
+  setDeveloperMode(!isDeveloperMode());
+});
 document.getElementById("cubeScopePopup")?.addEventListener("click", event => {
   event.stopPropagation();
 });
@@ -108,8 +112,42 @@ renderEmailRecords();
 applySidebarCollapsed(isSidebarCollapsed());
 applySectionCollapsed(CHATS_COLLAPSED_KEY, isSectionCollapsed(CHATS_COLLAPSED_KEY));
 applySectionCollapsed(EMAIL_COLLAPSED_KEY, isSectionCollapsed(EMAIL_COLLAPSED_KEY));
+applyDeveloperMode(isDeveloperMode());
 autoResizeQuestion();
 updateAnalyzeDisabled();
+
+// ── Developer mode toggle ────────────────────────────────────────────────────
+function isDeveloperMode() {
+  try { return localStorage.getItem(DEV_MODE_KEY) === "1"; }
+  catch { return false; }
+}
+
+function setDeveloperMode(on) {
+  try { localStorage.setItem(DEV_MODE_KEY, on ? "1" : "0"); } catch {}
+  applyDeveloperMode(on);
+}
+
+function applyDeveloperMode(on) {
+  const btn = document.getElementById("devModeBtn");
+  const label = document.getElementById("devModeLabel");
+  const placeholder = document.getElementById("q");
+  if (btn) {
+    btn.setAttribute("aria-pressed", String(on));
+    btn.classList.toggle("border-cw-blue", on);
+    btn.classList.toggle("bg-cw-blueLite", on);
+    btn.classList.toggle("text-cw-blue", on);
+  }
+  if (label) label.textContent = on ? "Developer · ON" : "Developer";
+  if (placeholder) {
+    placeholder.placeholder = on
+      ? "Ask for a TI process, rule, or feeder…"
+      : "Ask anything";
+  }
+}
+
+function getRequestMode() {
+  return isDeveloperMode() ? "developer" : "analyst";
+}
 
 // ── TM1 server status badge ───────────────────────────────────────────────────
 function _formatSyncTime(isoStr) {
@@ -435,9 +473,8 @@ async function fetchSuggestions() {
     const container = document.getElementById("suggestedContent");
     const loading   = document.getElementById("suggestedLoading");
     if (!container || !Array.isArray(suggestions)) return;
-    // Remove loading text and any previously rendered pills
     loading?.remove();
-    container.querySelectorAll("button.pill").forEach(b => b.remove());
+    container.querySelectorAll("button").forEach(b => b.remove());
     suggestions.forEach(q => {
       const btn = document.createElement("button");
       btn.type = "button";

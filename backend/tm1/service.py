@@ -521,3 +521,72 @@ def get_cubes_with_descriptions() -> list[dict]:
         ) from exc
 
     return result
+
+
+def list_ti_processes(name_filter: str = "") -> list[dict]:
+    """Return TI processes from the live model — name + has_security_access only.
+
+    Used by developer-mode tools to let the agent pick a process to read as a
+    template before generating a new one. We deliberately keep this list lean
+    (no bodies) so the LLM can scan many names quickly.
+    """
+    with TM1Service(**get_tm1_config()) as tm1:
+        names = tm1.processes.get_all_names() or []
+
+    term = (name_filter or "").strip().lower()
+    out = []
+    for n in names:
+        if term and term not in n.lower():
+            continue
+        out.append({"name": n})
+    return out
+
+
+def get_ti_process(name: str) -> dict:
+    """Fetch a single TI process definition.
+
+    Returns parameters, variables, datasource info, and the four code
+    sections (prolog, metadata, data, epilog). Raised exceptions bubble to
+    the caller — the registry handler catches them and converts to a JSON
+    error string for the LLM.
+    """
+    if not name:
+        raise ValueError("process name is required")
+
+    with TM1Service(**get_tm1_config()) as tm1:
+        process = tm1.processes.get(name)
+
+    def _serialise_collection(coll):
+        out = []
+        for item in coll or []:
+            if hasattr(item, "body"):
+                out.append(item.body)
+            elif isinstance(item, dict):
+                out.append(item)
+            else:
+                out.append(str(item))
+        return out
+
+    return {
+        "name": getattr(process, "name", name),
+        "has_security_access": bool(getattr(process, "has_security_access", False)),
+        "ui_data": getattr(process, "ui_data", "") or "",
+        "datasource": {
+            "type": getattr(process, "datasource_type", "None"),
+            "name_for_server": getattr(process, "datasource_name_for_server", "") or "",
+            "name_for_client": getattr(process, "datasource_name_for_client", "") or "",
+            "ascii_delimiter_char": getattr(process, "datasource_ascii_delimiter_char", "") or "",
+            "ascii_decimal_separator": getattr(process, "datasource_ascii_decimal_separator", "") or "",
+            "ascii_thousand_separator": getattr(process, "datasource_ascii_thousand_separator", "") or "",
+            "ascii_quote_character": getattr(process, "datasource_ascii_quote_character", "") or "",
+            "ascii_header_records": getattr(process, "datasource_ascii_header_records", 0) or 0,
+            "view": getattr(process, "datasource_view", "") or "",
+            "data_source_name_for_server": getattr(process, "datasource_data_source_name_for_server", "") or "",
+        },
+        "parameters": _serialise_collection(getattr(process, "parameters", None)),
+        "variables": _serialise_collection(getattr(process, "variables", None)),
+        "prolog_procedure": getattr(process, "prolog_procedure", "") or "",
+        "metadata_procedure": getattr(process, "metadata_procedure", "") or "",
+        "data_procedure": getattr(process, "data_procedure", "") or "",
+        "epilog_procedure": getattr(process, "epilog_procedure", "") or "",
+    }

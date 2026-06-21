@@ -1,13 +1,17 @@
 function renderInlineMarkdown(text) {
   return esc(text)
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
+    .replace(/\*([^*\n]+)\*/g, "<em>$1</em>")
+    // Drop stray, unpaired emphasis markers the LLM sometimes leaves behind
+    // (e.g. a truncated or unclosed **scenario) so they never render literally.
+    .replace(/\*\*/g, "");
 }
 
 function plainMarkdownText(text) {
   return String(text ?? "")
     .replace(/\*\*([^*]+)\*\*/g, "$1")
     .replace(/\*([^*\n]+)\*/g, "$1")
+    .replace(/\*\*/g, "")
     .trim();
 }
 

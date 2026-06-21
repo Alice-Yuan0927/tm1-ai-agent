@@ -35,6 +35,17 @@ function skeleton(question = "") {
       <summary class="cursor-pointer select-none opacity-70 hover:opacity-100">Agent tool calls</summary>
       <ul id="agent-tool-history" class="mt-2 space-y-1 pl-4 font-mono"></ul>
     </details>
+    <div id="token-usage-meter" class="mt-2 text-[11px] text-cw-muted"></div>
+  </div>`;
+}
+
+// One-line token-usage footer shown live and persisted on the final message.
+function _tokenUsageFooterHtml(usage) {
+  if (!usage || !usage.calls) return "";
+  const fmt = n => (n || 0).toLocaleString();
+  return `<div class="mt-4 border-t border-cw-borderLow pt-2 text-[11px] text-cw-muted">
+    🔢 ${fmt(usage.total_tokens)} tokens used across ${usage.calls} LLM call${usage.calls === 1 ? "" : "s"}
+    <span class="opacity-70">(${fmt(usage.input_tokens)} in · ${fmt(usage.output_tokens)} out)</span>
   </div>`;
 }
 
@@ -78,8 +89,19 @@ function _sourceCardsHtml(sources, reasoning, skippedSources) {
       </details>`
     : "";
 
+  // The blue banner repeats the model's overall reasoning. Skip it when it just
+  // echoes a source card's reasoning (the common single-cube case) so the same
+  // "Found data in …" line isn't shown twice.
+  const overall = String(reasoning || "").trim();
+  const sourceReasonings = new Set(
+    sources.map(s => String(s.reasoning || "").trim()).filter(Boolean)
+  );
+  const overallHtml = overall && !sourceReasonings.has(overall)
+    ? `<div class="mt-3 rounded-lg border border-cw-blueMid bg-cw-blueLite px-4 py-3 text-[13px] leading-relaxed text-cw-sub">${esc(overall)}</div>`
+    : "";
+
   return `<div class="grid grid-cols-1 gap-3">${cards}</div>
-    <div class="mt-3 rounded-lg border border-cw-blueMid bg-cw-blueLite px-4 py-3 text-[13px] leading-relaxed text-cw-sub">${esc(reasoning)}</div>
+    ${overallHtml}
     ${skippedNotice}`;
 }
 
@@ -227,6 +249,7 @@ function streamingArticle(event, question) {
         <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-cw-blue"></span>
         <span>Analyzing data...</span>
       </div>
+      <div id="token-usage-meter" class="mb-4 text-[11px] text-cw-muted"></div>
       <section class="mb-5">
         <h2 class="mb-2 text-[17px] font-semibold text-cw-text">Sources selected by AI</h2>
         ${_sourceCardsHtml(sources, event.reasoning || "", skipped)}
@@ -251,6 +274,7 @@ function renderSingleMessage(data) {
       <article class="w-full max-w-[760px] text-cw-text">
         <section>
           <div class="text-[15px] leading-6 text-cw-sub [&_strong]:font-semibold [&_strong]:text-cw-text [&_em]:italic">${renderMarkdown(data.analysis)}</div>
+          ${_tokenUsageFooterHtml(data.token_usage)}
         </section>
       </article>
     </div>`;
@@ -294,6 +318,7 @@ function renderSingleMessage(data) {
       </section>
       <section>
         <div class="text-[15px] leading-8 text-cw-sub [&_strong]:font-semibold [&_strong]:text-cw-text [&_em]:italic">${renderMarkdown(data.analysis)}</div>
+        ${_tokenUsageFooterHtml(data.token_usage)}
         ${suggestionsHtml}
       </section>
     </article>

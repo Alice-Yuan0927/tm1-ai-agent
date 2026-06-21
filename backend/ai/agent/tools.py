@@ -21,6 +21,7 @@ from ...tm1.service import get_cubes_with_descriptions
 from ..retrieval.rag import retrieve_similar
 from ..tools.element_tools import ELEMENT_REGISTRY
 from ..tools.registry import ToolRegistry, ToolSpec
+from ..tools.ti_tools import TI_REGISTRY
 
 _log = logging.getLogger(__name__)
 
@@ -184,3 +185,25 @@ EXECUTE_MDX_TOOL: dict = {
 
 # Full tool list passed to call_with_tools — registry tools + execute_mdx.
 ALL_AGENT_TOOLS: list[dict] = AGENT_REGISTRY.schemas() + [EXECUTE_MDX_TOOL]
+
+
+# ── Developer-mode registry (analyst tools + TI generation) ───────────────────
+# Same read-only discovery tools, plus generate_ti_process. Kept as a separate
+# registry so the analyst surface stays untouched and the dispatcher in loop.py
+# can pick by mode without leaking dev tools into normal analysis.
+
+DEVELOPER_REGISTRY: ToolRegistry = ToolRegistry()
+for _spec in AGENT_REGISTRY._specs.values():
+    DEVELOPER_REGISTRY.register(_spec)
+for _spec in TI_REGISTRY._specs.values():
+    DEVELOPER_REGISTRY.register(_spec)
+
+DEVELOPER_AGENT_TOOLS: list[dict] = DEVELOPER_REGISTRY.schemas() + [EXECUTE_MDX_TOOL]
+
+
+def get_agent_registry(mode: str) -> ToolRegistry:
+    return DEVELOPER_REGISTRY if mode == "developer" else AGENT_REGISTRY
+
+
+def get_agent_tools(mode: str) -> list[dict]:
+    return DEVELOPER_AGENT_TOOLS if mode == "developer" else ALL_AGENT_TOOLS

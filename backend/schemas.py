@@ -5,6 +5,7 @@ class QuestionRequest(BaseModel):
     question: str
     history: list[dict] = Field(default_factory=list)
     selected_cubes: list[str] = Field(default_factory=list)
+    mode: str = "analyst"  # "analyst" (default) | "developer"
 
 
 class EmailRequest(BaseModel):

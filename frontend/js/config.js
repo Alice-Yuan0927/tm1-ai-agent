@@ -1,11 +1,15 @@
 const API = "http://localhost:8000";
 const HISTORY_KEY = "tm1-ai-chat-history";
 const EMAIL_SENT_KEY = "tm1-ai-email-sent";
+const DETECTION_HISTORY_KEY = "tm1-ai-detection-history";
 const SIDEBAR_COLLAPSED_KEY = "tm1-ai-sidebar-collapsed";
 const CHATS_COLLAPSED_KEY = "tm1-ai-chats-collapsed";
 const EMAIL_COLLAPSED_KEY = "tm1-ai-email-collapsed";
+const DETECTION_COLLAPSED_KEY = "tm1-ai-detection-collapsed";
+const DEV_MODE_KEY = "tm1-ai-developer-mode";
 const MAX_HISTORY = 20;
 const MAX_EMAIL_RECORDS = 30;
+const MAX_DETECTION_HISTORY = 20;
 
 let currentResult = null;
 let currentChatId = null;

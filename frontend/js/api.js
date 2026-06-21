@@ -75,6 +75,16 @@ async function go(overrideOptions = {}) {
 
   let analysisEl = null;
   let analysisBuffer = "";
+  const tokenUsage = { calls: 0, total: 0 };
+
+  const updateTokenMeter = () => {
+    const meter = document.getElementById("token-usage-meter");
+    if (meter && tokenUsage.calls > 0) {
+      meter.textContent =
+        `🔢 ${tokenUsage.total.toLocaleString()} tokens used · ` +
+        `${tokenUsage.calls} LLM call${tokenUsage.calls === 1 ? "" : "s"}`;
+    }
+  };
 
   try {
     const res = await fetch(`${API}/api/analyze`, {
@@ -98,6 +108,7 @@ async function go(overrideOptions = {}) {
           })),
         })),
         selected_cubes: scope,
+        mode: typeof getRequestMode === "function" ? getRequestMode() : "analyst",
       }),
       signal: abortController.signal,
     });
@@ -144,11 +155,28 @@ async function go(overrideOptions = {}) {
             history.appendChild(li);
           }
 
+        } else if (event.type === "token_usage") {
+          tokenUsage.calls = event.call;
+          tokenUsage.total = event.cumulative_tokens;
+          updateTokenMeter();
+          const history = document.getElementById("agent-tool-history");
+          if (history) {
+            const li = document.createElement("li");
+            li.className = "text-cw-muted";
+            li.textContent =
+              `#${event.call} ${event.label || "llm"}: ` +
+              `${(event.input_tokens || 0).toLocaleString()} in + ` +
+              `${(event.output_tokens || 0).toLocaleString()} out = ` +
+              `${(event.total_tokens || 0).toLocaleString()} tok`;
+            history.appendChild(li);
+          }
+
         } else if (event.type === "sources") {
           window.clearInterval(thinkingTimer);
           output.querySelector('[data-thinking-state="true"]')?.remove();
           output.insertAdjacentHTML("beforeend", streamingArticle(event, question));
           analysisEl = document.getElementById("streaming-analysis");
+          updateTokenMeter();  // carry the running total into the new article's meter
           scrollToLatest();
 
         } else if (event.type === "chunk") {

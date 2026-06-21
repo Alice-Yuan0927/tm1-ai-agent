@@ -20,7 +20,26 @@ function applySidebarCollapsed(collapsed) {
   document.querySelectorAll(".sidebar-expanded").forEach(el => el.classList.toggle("hidden",  collapsed));
   document.querySelectorAll(".sidebar-collapsed").forEach(el => el.classList.toggle("hidden", !collapsed));
   if (toggle) toggle.title = collapsed ? "Expand sidebar" : "Cubewise";
-  updatePromptDock();
+  if (typeof updatePromptDock === "function") updatePromptDock();
+}
+
+function initSidebarShell() {
+  if (window.__sidebarShellInitialized) return;
+  window.__sidebarShellInitialized = true;
+  document.getElementById("collapseSidebarBtn")?.addEventListener("click", () => setSidebarCollapsed(true));
+  document.getElementById("sidebarToggle")?.addEventListener("click", () => {
+    if (isSidebarCollapsed()) setSidebarCollapsed(false);
+  });
+  document.getElementById("toggleDetectionHistoryBtn")?.addEventListener("click", () => {
+    setSectionCollapsed(DETECTION_COLLAPSED_KEY, !isSectionCollapsed(DETECTION_COLLAPSED_KEY));
+  });
+  document.getElementById("clearDetectionHistoryBtn")?.addEventListener("click", () => {
+    writeDetectionHistory([]);
+    renderDetectionHistory();
+  });
+  applySidebarCollapsed(isSidebarCollapsed());
+  renderDetectionHistory();
+  applySectionCollapsed(DETECTION_COLLAPSED_KEY, isSectionCollapsed(DETECTION_COLLAPSED_KEY));
 }
 
 function setSectionCollapsed(key, collapsed) {
@@ -29,15 +48,82 @@ function setSectionCollapsed(key, collapsed) {
 }
 
 function applySectionCollapsed(key, collapsed) {
-  const isChats = key === CHATS_COLLAPSED_KEY;
-  const list    = document.getElementById(isChats ? "historyList" : "emailList");
-  const button  = document.getElementById(isChats ? "toggleChatsBtn" : "toggleEmailBtn");
-  const clear   = document.getElementById(isChats ? "clearHistoryBtn" : "clearEmailBtn");
+  const section = {
+    [CHATS_COLLAPSED_KEY]: {
+      list: "historyList",
+      button: "toggleChatsBtn",
+      clear: "clearHistoryBtn",
+    },
+    [EMAIL_COLLAPSED_KEY]: {
+      list: "emailList",
+      button: "toggleEmailBtn",
+      clear: "clearEmailBtn",
+    },
+    [DETECTION_COLLAPSED_KEY]: {
+      list: "detectionHistoryList",
+      button: "toggleDetectionHistoryBtn",
+      clear: "clearDetectionHistoryBtn",
+    },
+  }[key];
+  if (!section) return;
+  const list    = document.getElementById(section.list);
+  const button  = document.getElementById(section.button);
+  const clear   = document.getElementById(section.clear);
   const icon    = button?.querySelector("i");
   list?.classList.toggle("hidden",  collapsed);
   clear?.classList.toggle("hidden", collapsed);
   button?.setAttribute("aria-expanded", String(!collapsed));
   if (icon) icon.className = collapsed ? "fa-solid fa-chevron-down" : "fa-solid fa-chevron-up";
+}
+
+function readDetectionHistory() {
+  try { return JSON.parse(localStorage.getItem(DETECTION_HISTORY_KEY) || "[]"); }
+  catch { return []; }
+}
+
+function writeDetectionHistory(items) {
+  localStorage.setItem(DETECTION_HISTORY_KEY, JSON.stringify(items.slice(0, MAX_DETECTION_HISTORY)));
+}
+
+function saveDetectionHistory(item) {
+  const id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
+  writeDetectionHistory([{ id, scannedAt: new Date().toISOString(), ...item }, ...readDetectionHistory()]);
+  renderDetectionHistory();
+}
+
+function renderDetectionHistory() {
+  const list = document.getElementById("detectionHistoryList");
+  if (!list) return;
+  const history = readDetectionHistory();
+  if (!history.length) {
+    list.innerHTML = '<div class="px-3 py-5 text-center text-xs text-cw-muted">No detections yet</div>';
+    return;
+  }
+  let lastGroup = "";
+  list.innerHTML = history.map(item => {
+    const timestamp = item.scannedAt || item.createdAt;
+    const group = formatHistoryGroup(timestamp);
+    const time = formatHistoryTime(timestamp);
+    const groupHeader = group === lastGroup ? "" :
+      `<div class="px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.08em] text-cw-muted">${esc(group)}</div>`;
+    lastGroup = group;
+    const total = Number(item.total || 0);
+    const cubesScanned = Number(item.cubesScanned || 0);
+    const cubesWithAnomalies = Number(item.cubesWithAnomalies || 0);
+    const period = item.period ? `Period ${esc(item.period)}` : "Detection scan";
+    const severity = `${Number(item.high || 0)} high, ${Number(item.medium || 0)} medium, ${Number(item.low || 0)} low`;
+    return `${groupHeader}<div class="mb-1 rounded-lg px-3 py-2.5 transition hover:bg-cw-bg">
+      <div class="flex items-center justify-between gap-2">
+        <div class="truncate text-[13px] font-medium text-cw-text">${period}</div>
+        <span class="shrink-0 rounded-full ${total ? "bg-red-50 text-red-600" : "bg-cw-greenBg text-cw-green"} px-2 py-0.5 text-[10px] font-semibold">${total}</span>
+      </div>
+      <div class="mt-0.5 flex items-center justify-between gap-2 text-[11px] text-cw-muted">
+        <span class="truncate">${cubesWithAnomalies}/${cubesScanned} cubes flagged</span>
+        <span class="shrink-0">${esc(time)}</span>
+      </div>
+      <div class="mt-1 truncate text-[11px] text-cw-muted">${severity}</div>
+    </div>`;
+  }).join("");
 }
 
 function formatHistoryGroup(date) {

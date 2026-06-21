@@ -8,6 +8,7 @@ import json
 from collections.abc import Iterator
 
 from ...config import get_llm_api_key, get_llm_model
+from . import usage as _usage
 
 try:
     from openai import OpenAI as _OpenAI
@@ -27,23 +28,32 @@ class DeepSeekProvider:
         return _OpenAI(api_key=api_key, base_url=_DEEPSEEK_BASE_URL)
 
     def complete(self, prompt: str, *, max_tokens: int, temperature: float) -> str:
+        model = get_llm_model()
         response = self._client().chat.completions.create(
-            model=get_llm_model(),
+            model=model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=max_tokens,
             temperature=temperature,
         )
+        _usage.record_openai(response, model=model, label="completion")
         return (response.choices[0].message.content or "").strip()
 
     def stream(self, prompt: str, *, max_tokens: int, temperature: float) -> Iterator[str]:
+        model = get_llm_model()
         stream = self._client().chat.completions.create(
-            model=get_llm_model(),
+            model=model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=max_tokens,
             temperature=temperature,
             stream=True,
+            stream_options={"include_usage": True},
         )
         for chunk in stream:
+            # The final usage-only chunk carries no choices.
+            if getattr(chunk, "usage", None) is not None:
+                _usage.record_openai(chunk, model=model, label="analysis")
+            if not chunk.choices:
+                continue
             content = chunk.choices[0].delta.content
             if content:
                 yield content
@@ -69,14 +79,16 @@ class DeepSeekProvider:
             }
             for t in tools
         ]
+        model = get_llm_model()
         response = self._client().chat.completions.create(
-            model=get_llm_model(),
+            model=model,
             messages=oai_messages,
             tools=oai_tools,
             tool_choice="auto",
             max_tokens=max_tokens,
             temperature=temperature,
         )
+        _usage.record_openai(response, model=model, label="agent")
         choice = response.choices[0]
         if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
             tool_calls = [

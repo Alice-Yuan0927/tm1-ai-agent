@@ -190,6 +190,72 @@ def get_cubes_cached() -> list[dict]:
     return [{"cube": r[0], "description": r[1] or r[0]} for r in rows]
 
 
+def get_cube_relationships_cached() -> list[dict]:
+    """Best-effort cube-to-cube dependencies extracted during schema sync."""
+    conn = connect()
+    if not cache_scope_matches(conn):
+        return []
+    try:
+        rows = conn.execute(
+            "SELECT from_cube, to_cube, relationship_type, source_name, snippet"
+            " FROM cube_relationships"
+            " ORDER BY relationship_type, from_cube, to_cube, source_name"
+        ).fetchall()
+    except Exception:
+        return []
+    return [
+        {
+            "from": r[0],
+            "to": r[1],
+            "type": r[2],
+            "source": r[3] or "",
+            "snippet": r[4] or "",
+        }
+        for r in rows
+    ]
+
+
+def get_process_cube_links_cached() -> list[dict]:
+    """Process-to-cube links extracted from TI datasource and code."""
+    conn = connect()
+    if not cache_scope_matches(conn):
+        return []
+    try:
+        rows = conn.execute(
+            "SELECT process_name, cube_name, role, datasource_type, object_name, snippet"
+            " FROM process_cube_links"
+            " ORDER BY cube_name, role, process_name"
+        ).fetchall()
+    except Exception:
+        return []
+    return [
+        {
+            "process": r[0],
+            "cube": r[1],
+            "role": r[2],
+            "datasource_type": r[3] or "",
+            "object": r[4] or "",
+            "snippet": r[5] or "",
+        }
+        for r in rows
+    ]
+
+
+def get_cube_relationship_stats_cached() -> dict:
+    conn = connect()
+    if not cache_scope_matches(conn):
+        return {"total": 0, "by_type": {}}
+    try:
+        rows = conn.execute(
+            "SELECT relationship_type, COUNT(*) FROM cube_relationships"
+            " GROUP BY relationship_type ORDER BY relationship_type"
+        ).fetchall()
+    except Exception:
+        return {"total": 0, "by_type": {}}
+    by_type = {r[0]: r[1] for r in rows}
+    return {"total": sum(by_type.values()), "by_type": by_type}
+
+
 def get_last_synced_at() -> str | None:
     conn = connect()
     if not cache_scope_matches(conn):

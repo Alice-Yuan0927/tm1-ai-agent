@@ -39,7 +39,7 @@ from ..providers import call_with_tools
 from ..schema.dim_roles import get_dim_role
 from ..tools.element_search import resolve_members
 from .prompt import build_system_prompt
-from .tools import AGENT_REGISTRY, ALL_AGENT_TOOLS
+from .tools import get_agent_registry, get_agent_tools
 
 _log = logging.getLogger(__name__)
 
@@ -155,6 +155,13 @@ def _short_args(tool: str, args: dict) -> str:
         return str(args.get("mdx", ""))[:60]
     if tool == "execute_mdx":
         return str(args.get("mdx", ""))[:80]
+    if tool == "list_ti_processes":
+        nf = args.get("name_filter", "")
+        return f"filter={nf}" if nf else "(all)"
+    if tool == "get_ti_process":
+        return str(args.get("name", ""))
+    if tool == "generate_ti_process":
+        return str(args.get("name", ""))
     return ""
 
 
@@ -176,16 +183,23 @@ def run_agent(
     model_profile: dict | None,
     selected_cubes: list[str] | None = None,
     max_steps: int = _MAX_AGENT_STEPS,
+    mode: str = "analyst",
 ) -> Iterator[tuple[str, Any]]:
     """Drive the analysis agent, yielding progress events while running.
 
     Yields:
       ("event",  {phase, tool, args_summary, result_summary})  — many of these
       ("result", AgentResult)                                  — exactly one
+
+    `mode='developer'` swaps in the TM1-developer system prompt and exposes
+    the TI generation tools (list_ti_processes, get_ti_process,
+    generate_ti_process) alongside the read-only grounding tools.
     """
     from ...services.mdx_execution import execute_once
 
-    system_prompt = build_system_prompt(model_profile, selected_cubes, history)
+    system_prompt = build_system_prompt(model_profile, selected_cubes, history, mode=mode)
+    agent_registry = get_agent_registry(mode)
+    agent_tools = get_agent_tools(mode)
     messages: list[dict] = [
         {"role": "user", "content": f'{system_prompt}\n\nUser question: "{question}"'},
     ]
@@ -196,7 +210,7 @@ def run_agent(
     for step_num in range(max_steps):
         text, tool_calls = call_with_tools(
             messages,
-            ALL_AGENT_TOOLS,
+            agent_tools,
             max_tokens=MDX_MAX_TOKENS,
             temperature=get_llm_temperature("mdx_temperature"),
         )
@@ -319,7 +333,7 @@ def run_agent(
 
             # ── All other tools — dispatch through registry ───────────────────
             else:
-                tool_result = AGENT_REGISTRY.execute(tool_name, tool_args, current_cube_schema)
+                tool_result = agent_registry.execute(tool_name, tool_args, current_cube_schema)
                 steps.append(AgentStep(tool_name, tool_args, tool_result[:120]))
                 _log.debug("[agent] %s step=%d: %s", tool_name, step_num, tool_result[:120])
 

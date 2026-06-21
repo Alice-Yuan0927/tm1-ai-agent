@@ -17,6 +17,7 @@ from .tm1.cache import init_schema_db, sync_schema
 from .tm1.cache import is_empty as _schema_is_empty
 from .services.embedding_sync import trigger_embedding_sync
 from .routes import analyze as analyze_routes
+from .routes import anomaly as anomaly_routes
 from .routes import assets as assets_routes
 from .routes import config as config_routes
 from .routes import email as email_routes
@@ -59,4 +60,5 @@ app.include_router(explain_cell_routes.router)
 app.include_router(export_routes.router)
 app.include_router(email_routes.router)
 app.include_router(rag_feedback_routes.router)
+app.include_router(anomaly_routes.router)
 app.include_router(assets_routes.router)

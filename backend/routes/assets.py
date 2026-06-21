@@ -1,15 +1,18 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
+from fastapi.templating import Jinja2Templates
 
 from ..config import FRONTEND_DIR
 
 router = APIRouter()
+templates = Jinja2Templates(directory=str(FRONTEND_DIR))
 
 _ALLOWED_JS_ASSETS = frozenset({
     "frontend.tailwind.js",
     "config.js", "markdown.js", "charts.js", "table.js",
     "store.js", "share.js", "ui.js", "sidebar.js",
     "cubes.js", "render.js", "api.js", "main.js",
+    "anomaly.js", "anomaly.tailwind.js", "sidebar.view.js",
 })
 
 
@@ -23,9 +26,33 @@ def _serve_js(asset_name: str) -> FileResponse:
 
 
 @router.get("/")
-def index():
+def index(request: Request):
+    return templates.TemplateResponse(
+        request,
+        "chat.html",
+        {
+            "active_page": "chat",
+        },
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
+@router.get("/anomaly.html")
+def anomaly_page(request: Request):
+    return templates.TemplateResponse(
+        request,
+        "anomaly.html",
+        {
+            "active_page": "anomaly",
+        },
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
+@router.get("/anomaly.css")
+def anomaly_css():
     return FileResponse(
-        FRONTEND_DIR / "frontend.html",
+        FRONTEND_DIR / "css" / "anomaly.css",
         headers={"Cache-Control": "no-store, max-age=0"},
     )
 

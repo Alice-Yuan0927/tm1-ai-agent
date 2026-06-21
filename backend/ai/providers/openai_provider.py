@@ -5,6 +5,7 @@ import re
 from collections.abc import Iterator
 
 from ...config import get_llm_api_key, get_llm_model
+from . import usage as _usage
 
 try:
     from openai import OpenAI
@@ -75,6 +76,7 @@ class OpenAIProvider:
                 raise
             kwargs.pop("temperature", None)
             response = openai_client().responses.create(**kwargs)
+        _usage.record_openai(response, model=model, label="completion")
         return _output_text(response)
 
     def stream(self, prompt: str, *, max_tokens: int, temperature: float) -> Iterator[str]:
@@ -95,10 +97,13 @@ class OpenAIProvider:
 
     @staticmethod
     def _stream_kwargs(kwargs: dict) -> Iterator[str]:
+        model = kwargs.get("model", "")
         with openai_client().responses.stream(**kwargs) as stream:
             for event in stream:
                 if event.type == "response.output_text.delta":
                     yield event.delta
+                elif event.type == "response.completed":
+                    _usage.record_openai(event.response, model=model, label="analysis")
 
     def call_with_tools(
         self,
@@ -137,6 +142,7 @@ class OpenAIProvider:
             kwargs.pop("temperature", None)
             response = openai_client().chat.completions.create(**kwargs)
 
+        _usage.record_openai(response, model=model, label="agent")
         choice = response.choices[0]
         if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
             tool_calls = [
